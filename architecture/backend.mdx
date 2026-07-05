@@ -1,7 +1,7 @@
 ---
-title: "Backend Architecture: Clean and Hexagonal Layers"
+title: "Unitru Academic Backend: Clean + Hexagonal Architecture"
 sidebarTitle: "Backend"
-description: "The backend applies Clean Architecture and Hexagonal Architecture. Dependencies flow inward: infrastructure adapters implement domain ports, use cases orchestrate domain services."
+description: "Python FastAPI backend internals: Clean Architecture layers, Hexagonal ports, Playwright anti-detection, Tesseract OCR pipeline, and manual DI wiring."
 ---
 
 The backend is a **Python 3.12 / FastAPI** service that applies both Clean Architecture and Hexagonal Architecture. The golden rule is that dependencies always point toward the domain — the domain knows nothing about Playwright, Tesseract, or FastAPI. Infrastructure adapters implement abstract ports defined in the application layer, and use cases wire together domain services without ever importing an infrastructure class directly.
@@ -117,11 +117,13 @@ async def execute(
             await emit("selecting_student", {})
             await self._suv_auth.select_student_profile(session)
             await emit("authentication_success", {})
+            session.touch()
             return session
 
         if attempt < MAX_CAPTCHA_ATTEMPTS:
             await self._suv_auth.reload_login_page(session)
 
+    await emit("authentication_failed", {"reason": "max_captcha_attempts"})
     raise AuthenticationError("Authentication failed after maximum captcha attempts")
 ```
 
@@ -170,7 +172,7 @@ await context.add_init_script(
 )
 ```
 
-Session teardown always follows the strict order **Page → BrowserContext → Browser**, with each close isolated in its own try/except so a failure at one level cannot prevent the others from being released.
+Session teardown always follows the strict order **Page → BrowserContext → Browser → Playwright**, with each close isolated in its own try/except so a failure at one level cannot prevent the others from being released. The `async_playwright` instance created per-session is stopped last, preventing process-level resource leaks.
 
 #### `SuvAuthenticator` — `SuvAuthenticationPort`
 
@@ -191,6 +193,7 @@ Maintains a dictionary of `BrowserSession` objects keyed by `session_id`. An `as
 
 ```python
 async def create_session(self) -> BrowserSession: ...
+def get_session(self, session_id: str) -> Optional[BrowserSession]: ...
 async def destroy_session(self, session_id: str) -> None: ...
 async def destroy_all(self) -> None: ...  # called on FastAPI lifespan shutdown
 ```

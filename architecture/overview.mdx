@@ -1,5 +1,5 @@
 ---
-title: "Unitru Academic System Architecture Overview"
+title: "Unitru Academic Architecture: How the System Works"
 sidebarTitle: "Overview"
 description: "Understand how the frontend and backend communicate over WebSocket, how data flows through Clean Architecture layers, and how credentials are kept secure."
 ---
@@ -71,7 +71,7 @@ Credential security is achieved through architecture, not encryption at rest —
     The `username` and `password` fields exist only inside the active WebSocket handler coroutine. They are passed directly to the `AuthenticateStudentUseCase`, typed into the Playwright page, and then go out of scope. No database write, no log line, no session store.
   </Card>
   <Card title="Browser session destroyed on close" icon="trash">
-    `SessionManager` ties each `BrowserSession` to a WebSocket connection. When the socket closes — whether normally or due to an error — the `finally` block calls `destroy_session`, which closes the Playwright resources in strict order: **Page → BrowserContext → Browser**.
+    `SessionManager` ties each `BrowserSession` to a WebSocket connection. When the socket closes — whether normally or due to an error — the `finally` block calls `destroy_session`, which closes the Playwright resources in strict order: **Page → BrowserContext → Browser → Playwright**.
   </Card>
   <Card title="No persistence beyond the session" icon="database">
     There is no database, no Redis session store, and no cookie jar persisted between requests. Each new login creates a fresh Chromium context with no prior state.

@@ -1,5 +1,5 @@
 ---
-title: "Troubleshoot Common Unitru Academic Issues"
+title: "Troubleshoot Unitru Academic: CAPTCHA, SUV, and Deployment"
 sidebarTitle: "Troubleshooting"
 description: "Diagnose and resolve common issues with CAPTCHA solving, SUV connectivity, schedule catalog misses, Railway deployment, and WebSocket connection failures."
 ---
@@ -109,7 +109,7 @@ All exceptions above inherit from the base `SuvError` class defined in `backend/
 
   **Steps to resolve:**
 
-  1. Check the `missing` list in the `optimized_schedules` payload returned by the backend.
+  1. Run `test_optimizer.py` with the course name to see whether the catalog contains it and which names it does recognize. The `missing` list is printed to stdout.
   2. Verify that the course name matches the exact spelling used in the official Google Sheets schedule (including accents and Roman numerals).
   3. Re-download and re-parse the catalog with the latest spreadsheet URL:
 

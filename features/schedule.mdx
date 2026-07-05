@@ -1,7 +1,7 @@
 ---
-title: "Weekly Schedule & Schedule Optimizer"
+title: "Weekly Schedule & Optimizer: Plan Your Next Enrollment"
 sidebarTitle: "Schedule"
-description: "View your auto-generated weekly schedule from attendance records and use the optimizer to find the best conflict-free section combination for your next enrollment."
+description: "Reconstruct your timetable from attendance data and find conflict-free section combinations ranked by idle gaps, campus days, and extreme-hour sessions."
 ---
 
 Unitru Academic provides two complementary schedule features. The **Weekly Schedule** reconstructs your current timetable from real attendance data — no manual input needed — and displays it as a Monday-to-Friday grid with course name, group, teacher, and classroom for each block. The **Schedule Optimizer** operates independently: given a list of course names from the official catalog, it finds the top-5 conflict-free section combinations ranked by a scoring function that penalizes idle gaps, excess campus days, and extreme-hour sessions.
@@ -16,7 +16,7 @@ The weekly schedule is derived entirely from attendance session records extracte
 
 <Steps>
   <Step title="Identify the student's real turn">
-    The SUV often embeds sessions from multiple groups inside the same attendance tracker. The builder detects the student's actual turn by looking for the `(day, start_time, end_time)` blocks where at least one session has a non-absent status (`P`, `PRESENTE`, `A`, `J`, `JUSTIFICADO`, `JU`). Blocks with no attendance history are discarded.
+    The SUV often embeds sessions from multiple groups inside the same attendance tracker. The builder detects the student's actual turn by looking for the `(day, start_time, end_time)` blocks where at least one session has a non-absent status (`P`, `PRESENTE`, `A`, `J`, `JUSTIFICADO`, `JU`). Blocks belonging to other groups (all statuses `S/A`) are discarded. If no block shows any attendance yet — for example in the first week of the cycle — all blocks are kept so that no course disappears from the grid.
   </Step>
   <Step title="Deduplicate slots">
     Sessions are collapsed by a `(day_name, start_time, end_time, course_name)` key. Only the first occurrence of each unique combination becomes a `ScheduleSlot` — cancelled sessions are always skipped.
@@ -92,7 +92,7 @@ Each candidate schedule returned by the optimizer exposes:
 
 <Steps>
   <Step title="Build candidate selections per course">
-    For each requested course name the optimizer queries the catalog using normalized matching (Unicode-stripped, lowercased, whitespace-normalized). Sections are grouped by `(cycle, section)`. Within a section, sessions without a `subgroup` (theory/practice shared by all) are always included; sessions with a `subgroup` (lab groups G1/G2/…) produce one `CourseSelection` candidate each.
+    For each requested course name the optimizer queries the catalog using normalized matching (Unicode-stripped, lowercased, whitespace-normalized). Sections are grouped by `(cycle, section)`. Within a section, sessions without a `subgroup` (theory/practice shared by all) are always included; each distinct `subgroup` label (lab groups G1/G2/…) produces one `CourseSelection` candidate, each bundling the shared fixed sessions with that subgroup's own sessions.
   </Step>
   <Step title="Backtracking with conflict detection">
     A recursive backtracking function walks through the course list. For each candidate selection it checks every session against all already-committed sessions for overlap: `a.day == b.day AND a.start_min < b.end_min AND b.start_min < a.end_min`. Any overlapping candidate is skipped entirely.
@@ -108,7 +108,7 @@ Each candidate schedule returned by the optimizer exposes:
 ### `optimize()` Signature
 
 ```python
-from backend.src.domain.services.schedule_optimizer import optimize, OptimizerWeights
+from src.domain.services.schedule_optimizer import optimize, OptimizerWeights
 
 schedules, missing = optimize(
     course_names=["ALGEBRA LINEAL", "CALCULO II", "FISICA I"],

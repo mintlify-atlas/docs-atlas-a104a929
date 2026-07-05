@@ -1,7 +1,7 @@
 ---
 title: "Backend Utility Scripts for Catalog and Diagnostics"
 sidebarTitle: "Scripts"
-description: "Run diagnostic and data-management scripts to inspect SUV selectors, test end-to-end extraction, download schedule catalog data, and validate the schedule optimizer."
+description: "Inspect SUV selectors, run end-to-end tests, download catalog data, and validate the schedule optimizer with these backend utility scripts."
 ---
 
 The `backend/scripts/` directory contains five utility scripts for development, debugging, and catalog management. They are development tools — none of them run as part of the production backend. All scripts that interact with the live SUV portal operate against the real university system, so **never hardcode credentials** in these files.
@@ -36,6 +36,9 @@ URL final: https://suv2.unitru.edu.pe/
 {'tag': 'input', 'type': 'text', 'name': 'txtCodigo', 'id': 'txtCodigo', ...}
 {'tag': 'input', 'type': 'password', 'name': 'txtClave', 'id': 'txtClave', ...}
 
+=== BOTONES ===
+{'tag': 'button', 'type': 'submit', 'id': None, 'name': None, 'text': 'Ingresar', ...}
+
 === IMAGENES ===
 {'id': 'imgCaptcha', 'src': '/captcha.php', 'alt': None, 'className': None}
 ```
@@ -44,7 +47,7 @@ URL final: https://suv2.unitru.edu.pe/
 
 ## test_full_dashboard.py
 
-Runs a full end-to-end test against the live SUV: authenticates with the provided credentials (retrying CAPTCHA up to 5 times), then extracts all data modules — profile, academic record, enrollment, attendance, grades, schedule, and optimized schedule options — and prints the complete JSON-like result to stdout.
+Runs a full end-to-end test against the live SUV: authenticates with the provided credentials (retrying the full authentication flow globally up to **5 times**, with up to **3 CAPTCHA attempts** per try), then extracts all data modules — profile, academic record, enrollment, attendance, grades, schedule, and optimized schedule options — and prints the complete JSON-like result to stdout.
 
 Use this script to confirm that all extractors and navigators are working correctly after a SUV update, or to reproduce a bug reported by a user.
 
@@ -58,8 +61,13 @@ python3 scripts/test_full_dashboard.py <usuario> <contraseña>
 
 ```
 [Auth intento global 1/5]
-  · captcha_attempt {'attempt': 1}
-  · authenticated
+  · opening_suv {}
+  · loading_login {}
+  · downloading_captcha {'attempt': 1}
+  · solving_captcha {'attempt': 1}
+  · submitting_login {}
+  · selecting_student {}
+  · authentication_success {}
 
 ✓ Autenticado. Extrayendo dashboard...
 
@@ -159,8 +167,8 @@ python3 scripts/test_optimizer.py
 
   #1 puntaje=91 | 4 días | 1h00 libres | 0 extremos
      secciones: Cálculo I→III-A, Física I→III-A
-       Lunes     07:00-09:00 Cálculo I              Teoría       (A)
-       Miércoles 08:00-10:00 Física I               Teoría       (A)
+       Lunes     07:00-09:00 Cálculo I              Teoría                 (A)
+       Miércoles 08:00-10:00 Física I               Teoría                 (A)
 ```
 
 Any course name that does not match a section in the catalog appears in a `missing` list. Re-run `download_horarios.py` and `parse_horarios.py` to refresh the catalog if courses are missing.

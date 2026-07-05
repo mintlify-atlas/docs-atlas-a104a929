@@ -19,13 +19,13 @@ The backend URL is configured at build time through the `NEXT_PUBLIC_BACKEND_WS_
 
 <Tabs>
   <Tab title="Local Development">
-    ```
+    ```text
     ws://localhost:8000
     ```
     The full WebSocket endpoint is `ws://localhost:8000/ws`.
   </Tab>
   <Tab title="Production (Railway)">
-    ```
+    ```text
     wss://your-backend.up.railway.app
     ```
     The full WebSocket endpoint is `wss://your-backend.up.railway.app/ws`. Railway terminates TLS, so the backend itself listens on plain HTTP/WS internally.

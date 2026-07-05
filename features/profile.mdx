@@ -1,7 +1,7 @@
 ---
 title: "Student Profile: Personal and Academic Data from the SUV"
 sidebarTitle: "Profile"
-description: "View your complete student profile extracted from the SUV, including personal data, faculty, career, admission year, contact information, and profile photo."
+description: "View your student profile extracted from the SUV: personal data, faculty, school, campus, admission year, contact details, and a base64 profile photo."
 ---
 
 The Profile module displays every piece of personal and academic data that the SUV exposes on its *perfil* screen. Unitru Academic extracts this information in the same headless-browser session used for grades and attendance — no separate login or extra request is needed. The profile photo is downloaded from the SUV and embedded directly in the response as a base64 data URL, so the frontend renders it without making any external image request.

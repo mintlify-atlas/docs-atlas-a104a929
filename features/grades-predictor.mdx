@@ -1,7 +1,7 @@
 ---
 title: "Grades & Grade Predictor: Plan Your Passing Scores"
 sidebarTitle: "Grades & Predictor"
-description: "View current-cycle grades per course with unit breakdown (U1–U6) and use the grade predictor to see every score combination that results in a passing average."
+description: "View current-cycle grades with full unit breakdown and use the grade predictor to calculate every valid score combination that achieves a passing average."
 ---
 
 The **Grades** section and the **Grade Predictor** work together as a single flow inside Unitru Academic. Grade cards display every course enrolled in the current cycle with its complete unit breakdown — U1 through U6, sustentación, nota de promoción, aplazado, and final grade — while the predictor goes one step further: for each course that is still in progress, it computes every valid integer-score combination across the pending units that would bring the rounded average to at least 14, so you always know exactly what you need before the next exam.
@@ -106,7 +106,7 @@ The predictor is implemented in `backend/src/domain/services/grade_predictor.py`
     If filling all pending units with the maximum score of **20** still does not produce an average ≥ 14, `is_possible` is set to `False` and the predictor stops enumerating combinations.
   </Step>
   <Step title="Find the minimum score per pending unit">
-    Starting from 0 and iterating up to 20, the predictor finds the smallest integer `x` such that replacing every pending unit with `x` yields a rounded average ≥ 14. This value is stored as `min_per_pending`.
+    This step runs only when `is_possible = True`. Starting from 0 and iterating up to 20, the predictor finds the smallest integer `x` such that replacing every pending unit with `x` yields a rounded average ≥ 14. This value is stored as `min_per_pending`.
 
     ```python
     for x in range(21):

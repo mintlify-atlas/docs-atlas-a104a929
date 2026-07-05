@@ -1,7 +1,7 @@
 ---
-title: "Get Unitru Academic Running with Docker Compose"
+title: "Get Unitru Academic Running Locally with Docker Compose"
 sidebarTitle: "Quickstart"
-description: "Clone the repo, run docker compose up --build, and open the Unitru Academic dashboard at localhost:3000 in under five minutes."
+description: "Clone the repo, run docker compose up --build, and open the Unitru Academic dashboard at localhost:3000 in under five minutes on any OS."
 ---
 
 The fastest way to run Unitru Academic is with **Docker Compose**, which starts both the Python/FastAPI backend and the Next.js frontend in isolated containers with a single command. The entire setup takes under five minutes on a decent connection — the only caveat is that the **first build downloads Chromium and Tesseract (~500 MB)**, so subsequent builds are nearly instant thanks to Docker layer caching.
@@ -120,7 +120,7 @@ uvicorn src.main:app --reload
 
 ### Frontend
 
-**Requirements:** Node.js 18+
+**Requirements:** Node.js 22+
 
 ```bash
 cd frontend

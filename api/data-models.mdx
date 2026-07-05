@@ -40,8 +40,8 @@ The root object delivered in the `dashboard_ready` event's `data` field.
     <ResponseField name="enrollment_type" type="string | null">
       The enrollment modality for this period, e.g. regular or special enrollment.
     </ResponseField>
-    <ResponseField name="courses" type="CourseGrade[]">
-      Array of individual course grade records. See **CourseGrade** below.
+    <ResponseField name="courses" type="Course[]">
+      Array of individual course grade records. See **Course** below.
     </ResponseField>
   </Expandable>
 </ResponseField>
@@ -78,11 +78,11 @@ The root object delivered in the `dashboard_ready` event's `data` field.
 
 ## Sub-types
 
-### CourseGrade
+### Course
 
 One row in `grade_report.courses`. Represents a single enrolled course with all published unit scores.
 
-<Expandable title="CourseGrade fields">
+<Expandable title="Course fields">
   <ResponseField name="course_id" type="string">
     The official SUV course identifier code.
   </ResponseField>
@@ -135,7 +135,7 @@ One row in `grade_report.courses`. Represents a single enrolled course with all 
 
 ### CoursePrediction
 
-Attached to a `CourseGrade` when the backend can project what minimum scores are needed in pending units for the student to pass.
+Attached to a `Course` when the backend can project what minimum scores are needed in pending units for the student to pass.
 
 <Expandable title="CoursePrediction fields">
   <ResponseField name="course_id" type="string">
@@ -569,7 +569,7 @@ export interface DashboardReport {
 }
 ```
 
-```typescript GradeReport & CourseGrade
+```typescript GradeReport & Course
 export interface CoursePrediction {
   course_id: string
   course_name: string
@@ -738,34 +738,36 @@ export interface AcademicAnalytics {
 
 <CodeGroup>
 
-```python GradeReport (domain entity)
+```python CourseDto & GradeReportDto (application layer)
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import List, Optional
 
 @dataclass
-class Course:
+class CourseDto:
     course_id: str
     course_name: str
     attempt: int
-    u1: Optional[Decimal] = None
-    u2: Optional[Decimal] = None
-    u3: Optional[Decimal] = None
-    u4: Optional[Decimal] = None
-    u5: Optional[Decimal] = None
-    u6: Optional[Decimal] = None
-    sust: Optional[Decimal] = None
-    np: Optional[Decimal] = None
-    apla: Optional[Decimal] = None
-    final_grade: Optional[Decimal] = None
-    inh: bool = False
+    u1: Optional[Decimal]
+    u2: Optional[Decimal]
+    u3: Optional[Decimal]
+    u4: Optional[Decimal]
+    u5: Optional[Decimal]
+    u6: Optional[Decimal]
+    sust: Optional[Decimal]
+    np: Optional[Decimal]
+    apla: Optional[Decimal]
+    final_grade: Optional[Decimal]
+    inh: bool
+    average: Optional[Decimal] = None
+    prediction: Optional[CoursePredictionDto] = None
 
 @dataclass
-class GradeReport:
-    period: Optional[str] = None
-    payment_order: Optional[str] = None
-    enrollment_type: Optional[str] = None
-    courses: List[Course] = field(default_factory=list)
+class GradeReportDto:
+    period: Optional[str]
+    payment_order: Optional[str]
+    enrollment_type: Optional[str]
+    courses: List[CourseDto] = field(default_factory=list)
 ```
 
 ```python StudentProfile (domain entity)
@@ -795,13 +797,12 @@ class StudentProfile:
     photo_data_url: Optional[str] = None
 ```
 
-```python AcademicRecord (domain entity)
+```python AcademicRecordDto (application layer)
 from dataclasses import dataclass, field
-from decimal import Decimal
 from typing import List, Optional
 
 @dataclass
-class CourseHistory:
+class CourseHistoryDto:
     period: str
     course_id: str
     course_name: str
@@ -811,19 +812,19 @@ class CourseHistory:
     course_type: str
     section: Optional[str]
     group: Optional[str]
-    final_grade: Optional[Decimal]
+    final_grade: Optional[str]
     is_disabled: bool
 
 @dataclass
-class AcademicRecord:
+class AcademicRecordDto:
     student_name: str
     enrollment_number: str
     condition: str
     accumulated_credits: int
-    weighted_average: Decimal
+    weighted_average: str
     payment_status: Optional[str]
     payment_order: Optional[str]
-    courses: List[CourseHistory] = field(default_factory=list)
+    courses: List[CourseHistoryDto] = field(default_factory=list)
 ```
 
 ```python DashboardReportDto (application layer)

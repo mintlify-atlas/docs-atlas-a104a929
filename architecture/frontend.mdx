@@ -1,7 +1,7 @@
 ---
 title: "Frontend Architecture: Feature-Based Next.js Application"
 sidebarTitle: "Frontend"
-description: "The Next.js 16 frontend uses feature-based folder organization. Each feature owns its components and types. Communication with the backend is via a single WebSocket client."
+description: "Next.js 16 frontend: feature-based folders, single WebSocket client, AppView state machine, authentication progress stepper, and core TypeScript types."
 ---
 
 The frontend is a **Next.js 16 / React 19 / TypeScript 5** application styled with **Tailwind CSS 4** and using **Recharts 3** for analytics charts. It follows a strict **feature-based architecture**: every product feature lives in its own folder under `features/`, owning its components and types. The single shared infrastructure piece is the WebSocket client in `infrastructure/websocket/`, which is the only place in the entire frontend that knows the backend exists.
@@ -113,12 +113,19 @@ export function connectAndFetch(
   }
 
   ws.onmessage = (event) => {
-    const message: WebSocketMessage = JSON.parse(event.data)
+    let message: WebSocketMessage
+    try {
+      message = JSON.parse(event.data)
+    } catch {
+      callbacks.onError("Respuesta inválida del servidor")
+      return
+    }
 
     if (message.event === "dashboard_ready") {
       callbacks.onDashboardReport(message.data as unknown as DashboardReport)
     } else if (message.event === "error") {
-      callbacks.onError((message.data as { message?: string }).message ?? "Error desconocido")
+      const data = message.data as { message?: string }
+      callbacks.onError(data.message ?? "Error desconocido")
     } else {
       callbacks.onEvent(message.event, message.data)
     }
@@ -187,7 +194,7 @@ type AppView = "hero" | "login" | "loading" | "done" | "error"
 |---|---|
 | **Autenticando** | `opening_suv`, `loading_login`, `downloading_captcha`, `solving_captcha`, `submitting_login`, `selecting_student`, `authentication_success` |
 | **Perfil y matrícula** | `extracting_profile`, `profile_extraction_success/failed`, `extracting_record`, `record_extraction_success/failed`, `extracting_enrollment`, `enrollment_extraction_success/failed` |
-| **Notas y asistencia** | `extracting_attendance`, `attendance_extraction_success/failed`, `extracting_grades`, `grade_extraction_success`, `optimizing_schedule`, `schedule_optimized/failed` |
+| **Notas y asistencia** | `extracting_attendance`, `attendance_extraction_success/failed`, `extracting_grades`, `extracting_academic_info`, `extracting_courses`, `grade_extraction_success`, `optimizing_schedule`, `schedule_optimized/failed` |
 | **Dashboard listo** | `dashboard_ready` |
 
 Each step circle shows a number (pending), a spinner (active), a gold checkmark (completed), or a red ✕ (error). The currently active step also shows the human-readable label from `EVENT_LABELS` as a subtitle.
@@ -314,7 +321,7 @@ interface DashboardReport {
 
 `DashboardLayout` renders a persistent two-column shell:
 
-- **Left**: `SidebarNav` — a vertical list of tab links. On mobile it is an off-canvas drawer toggled by a hamburger button. Includes the student's name, an attention badge when any course is at attendance risk, and a "Cerrar sesión" / reset link.
+- **Left**: `SidebarNav` — a vertical list of tab links. On mobile it is an off-canvas drawer toggled by a hamburger button. Includes the student's name, an attention badge when any course is at attendance risk, and a "Nueva consulta" reset button.
 - **Right**: a scrollable main area containing the `DashboardHeader` (student metadata), the CSV export button, and the `DashboardTabs` content pane.
 
 `DashboardTabs` receives the active tab name and the full `DashboardReport`, then renders the matching feature component. Tab routing is pure React state — there is no Next.js router involvement after the initial page load.
