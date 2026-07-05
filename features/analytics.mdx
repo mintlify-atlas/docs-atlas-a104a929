@@ -1,0 +1,177 @@
+---
+title: "Academic Analytics: Period-by-Period Performance Stats"
+sidebarTitle: "Analytics"
+description: "Analyze your academic performance with pass rates, weighted averages, course retries, and best/worst period identification across your entire academic history."
+---
+
+The Analytics module transforms your raw academic record into actionable performance insights. Using the `academic_analytics.py` domain service, Unitru Academic computes pass rates, weighted averages, and retry counts for every period you have been enrolled — completely on the fly from the already-extracted record data, with no additional server-side storage. Results are displayed as bar charts (powered by Recharts 3) alongside a full period-by-period breakdown table and highlighted callouts for your best and worst performing periods.
+
+---
+
+## Data Model
+
+### AcademicAnalytics
+
+```python
+@dataclass
+class AcademicAnalytics:
+    period_stats: list[PeriodStat]
+    total_courses: int
+    total_passed: int
+    total_failed: int
+    overall_pass_rate: Decimal     # e.g. Decimal("87.50")
+    retried_course_names: list[str]
+    best_period: str | None
+    worst_period: str | None
+```
+
+### PeriodStat
+
+```python
+@dataclass
+class PeriodStat:
+    period: str
+    courses_taken: int
+    courses_passed: int
+    courses_failed: int
+    pass_rate: Decimal             # e.g. Decimal("75.00") — percentage
+    weighted_average: Decimal      # e.g. Decimal("14.33")
+```
+
+### TypeScript Counterparts
+
+```typescript
+export interface PeriodStat {
+  period: string
+  courses_taken: number
+  courses_passed: number
+  courses_failed: number
+  pass_rate: string           // decimal string, e.g. "75.00"
+  weighted_average: string    // decimal string, e.g. "14.33"
+}
+
+export interface AcademicAnalytics {
+  period_stats: PeriodStat[]
+  total_courses: number
+  total_passed: number
+  total_failed: number
+  overall_pass_rate: string
+  retried_course_names: string[]
+  best_period: string | null
+  worst_period: string | null
+}
+```
+
+---
+
+## Field Reference
+
+| Field | Description |
+|---|---|
+| `period_stats` | One `PeriodStat` entry per academic period, sorted chronologically |
+| `total_courses` | Total graded, non-disabled courses across all periods |
+| `total_passed` | Courses with `final_grade >= 14` |
+| `total_failed` | `total_courses − total_passed` |
+| `overall_pass_rate` | `(total_passed / total_courses) × 100`, rounded to 2 decimal places |
+| `retried_course_names` | Sorted list of course names enrolled more than once (any `attempt > 1`) |
+| `best_period` | Period with the highest `weighted_average` |
+| `worst_period` | Period with the lowest `weighted_average` (among periods with graded courses) |
+
+---
+
+## Computation Logic
+
+Analytics are computed by the `compute(record: AcademicRecord)` function in `academic_analytics.py`. Only courses with a non-null `final_grade` and `is_disabled = False` enter any calculation:
+
+```python
+graded = [
+    c for c in record.courses
+    if c.final_grade is not None and not c.is_disabled
+]
+```
+
+Per-period averages and pass rates are computed with `ROUND_HALF_UP` applied at 2 decimal places:
+
+```python
+avg = (
+    sum(c.final_grade for c in courses) / Decimal(total)
+).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+rate = (
+    Decimal(len(passed)) / Decimal(total) * Decimal("100")
+).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+```
+
+`best_period` and `worst_period` are determined by `max` / `min` on `weighted_average` across all `PeriodStat` entries. If only one period exists, both fields point to the same period.
+
+---
+
+## Charts
+
+The frontend (`analytics_view.tsx`) renders two bar charts using **Recharts 3**:
+
+<Tabs>
+  <Tab title="Weighted Average per Period">
+    A `BarChart` with `Promedio` on the Y-axis (domain 0–20) and period labels on the X-axis. Bars are filled in `#FFD200` (UNT yellow). A tooltip shows the exact average on hover.
+
+    ```tsx
+    <Bar dataKey="Promedio" fill="#FFD200" radius={[3, 3, 0, 0]} maxBarSize={48} />
+    ```
+  </Tab>
+  <Tab title="Passed vs. Failed per Period">
+    A grouped `BarChart` with two bar series: `Aprobados` (green `#22c55e`) and `Reprobados` (red `#BA1A1A`). A shared legend distinguishes the two series.
+
+    ```tsx
+    <Bar dataKey="Aprobados" fill="#22c55e" radius={[3, 3, 0, 0]} maxBarSize={36} />
+    <Bar dataKey="Reprobados" fill="#BA1A1A" radius={[3, 3, 0, 0]} maxBarSize={36} />
+    ```
+  </Tab>
+</Tabs>
+
+Both charts use a `ResponsiveContainer` at 100% width and are hidden when there are no period stats to display.
+
+---
+
+## Global Summary Cards
+
+Four summary cards appear above the charts:
+
+| Card | Value shown |
+|---|---|
+| Total cursos | `total_courses` |
+| Aprobados | `total_passed` (green) |
+| Reprobados | `total_failed` (red) |
+| Tasa global | `overall_pass_rate` formatted to 1 decimal place (e.g., `87.5%`) |
+
+---
+
+## Retried Courses
+
+The `retried_course_names` list surfaces every course name that appears with `attempt > 1` in the academic record. These are displayed as red-tinted chips:
+
+```tsx
+{analytics.retried_course_names.map((name) => (
+  <span className="rounded bg-[#BA1A1A]/10 px-2 py-1 text-xs font-medium text-[#BA1A1A]">
+    {name}
+  </span>
+))}
+```
+
+<Note>
+  Retried courses are identified by the `attempt` field on each `CourseHistory` entry — specifically any entry where `attempt > 1`. The unique course names are de-duplicated and sorted alphabetically before being included in `retried_course_names`. A course appearing in three periods with `attempt` values of 1, 2, and 3 contributes only one entry to this list.
+</Note>
+
+---
+
+## Best & Worst Period Highlights
+
+Two highlight cards appear at the bottom of the analytics view when at least one period has graded data:
+
+<CardGroup cols={2}>
+  <Card title="🏆 Best Period" icon="trophy">
+    The period with the highest `weighted_average` across all graded periods. Rendered with a green border and background.
+  </Card>
+  <Card title="📉 Worst Period" icon="chart-line-down">
+    The period with the lowest `weighted_average`. Only shown when it differs from the best period. Rendered with a red-tinted border and background.
+  </Card>
+</CardGroup>

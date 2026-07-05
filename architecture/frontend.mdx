@@ -1,0 +1,335 @@
+---
+title: "Frontend Architecture: Feature-Based Next.js Application"
+sidebarTitle: "Frontend"
+description: "The Next.js 16 frontend uses feature-based folder organization. Each feature owns its components and types. Communication with the backend is via a single WebSocket client."
+---
+
+The frontend is a **Next.js 16 / React 19 / TypeScript 5** application styled with **Tailwind CSS 4** and using **Recharts 3** for analytics charts. It follows a strict **feature-based architecture**: every product feature lives in its own folder under `features/`, owning its components and types. The single shared infrastructure piece is the WebSocket client in `infrastructure/websocket/`, which is the only place in the entire frontend that knows the backend exists.
+
+---
+
+## Feature Directory Structure
+
+```text
+frontend/
+├── app/
+│   ├── layout.tsx          # Root layout — Inter font, metadata, globals.css
+│   └── page.tsx            # Single-page app shell — manages AppView state machine
+├── features/
+│   ├── authentication/     # Login form + progress display
+│   ├── dashboard/          # Layout, tabs, sidebar navigation
+│   ├── grades/             # Grade cards per course with unit breakdown
+│   ├── attendance/         # Attendance list with risk indicators
+│   ├── schedule/           # Weekly schedule grid (Mon–Fri)
+│   ├── schedule_optimizer/ # Optimized schedule display (top-3 options)
+│   ├── record/             # Academic record table
+│   ├── analytics/          # Period analytics charts and summary table
+│   ├── profile/            # Student profile card with photo
+│   ├── home/               # Home view (post-auth landing inside dashboard)
+│   ├── landing/            # Pre-auth hero section
+│   └── error/              # Error screen with retry action
+└── infrastructure/
+    └── websocket/
+        └── websocket_client.ts   # Single backend integration point
+```
+
+### Feature Responsibilities
+
+<CardGroup cols={2}>
+  <Card title="authentication/" icon="key">
+    Login form (`LoginForm`) and the real-time extraction progress screen (`AuthenticationProgress`). The progress screen groups all backend events into four named stages and shows the current step label.
+  </Card>
+  <Card title="dashboard/" icon="layout-dashboard">
+    `DashboardLayout` holds the full post-auth shell: a collapsible sidebar (`SidebarNav`), a header with student name and CSV export button, and the `DashboardTabs` router that renders the active feature view.
+  </Card>
+  <Card title="grades/" icon="graduation-cap">
+    `GradeCards` renders one card per enrolled course. Each card shows unit grades U1–U6, sustentación, NP, partial average, and — when predictions are available — the grade combinations needed to pass.
+  </Card>
+  <Card title="attendance/" icon="calendar-check">
+    `AttendanceList` displays a row per course with total sessions, attended count, absence count, percentage bar, and a prominent **"EN RIESGO"** badge when `is_at_risk` is true.
+  </Card>
+  <Card title="schedule/" icon="calendar">
+    `ScheduleGrid` renders the weekly timetable derived from attendance records. Slots show course name, teacher, group, and classroom when available.
+  </Card>
+  <Card title="schedule_optimizer/" icon="sparkles">
+    `OptimizerView` shows up to three conflict-free schedule options returned by the backend optimizer, each with a numeric score and a full session-by-session breakdown.
+  </Card>
+  <Card title="record/" icon="book-open">
+    `RecordTable` renders the full historical course list grouped by period, enriched with the current period's partial averages from the grades module (shown in italics, since final grades are not yet published).
+  </Card>
+  <Card title="analytics/" icon="chart-bar">
+    `AnalyticsView` uses Recharts to render period-by-period pass rate and weighted average charts, plus a summary table of totals and retried courses.
+  </Card>
+  <Card title="profile/" icon="user">
+    `ProfileCard` displays all personal data from the SUV: full name, enrollment number, faculty, school, emails, phone, curriculum, and the student photo (embedded as a data URL).
+  </Card>
+  <Card title="landing/" icon="house">
+    `HeroSection` is the pre-authentication welcome screen. It presents the application value proposition and routes the user to the login form.
+  </Card>
+  <Card title="home/" icon="home">
+    `HomeView` is the first tab shown after a successful extraction. It provides a summary of the most relevant data: grades, attendance alerts, and upcoming schedule.
+  </Card>
+  <Card title="error/" icon="circle-x">
+    `ErrorScreen` displays the user-facing error message delivered by the backend and offers a "Retry" button that resets the app to the login view.
+  </Card>
+</CardGroup>
+
+---
+
+## WebSocket Client
+
+`infrastructure/websocket/websocket_client.ts` is the **only file** that communicates with the backend. The rest of the frontend treats it as a black box.
+
+### `WebSocketCallbacks` Interface
+
+```typescript
+export interface WebSocketCallbacks {
+  onEvent: (event: string, data: Record<string, unknown>) => void
+  onDashboardReport: (report: DashboardReport) => void
+  onError: (message: string) => void
+  onClose: () => void
+}
+```
+
+| Callback | When it fires |
+|---|---|
+| `onEvent` | Every backend progress event except `dashboard_ready` and `error` |
+| `onDashboardReport` | When `event === "dashboard_ready"` — the fully typed `DashboardReport` payload |
+| `onError` | When `event === "error"`, when the WebSocket itself errors, or when JSON parsing fails |
+| `onClose` | When the WebSocket closes for any reason |
+
+### `connectAndFetch`
+
+```typescript
+export function connectAndFetch(
+  username: string,
+  password: string,
+  callbacks: WebSocketCallbacks
+): () => void {
+  const ws = new WebSocket(BACKEND_WS_URL)
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ username, password }))
+  }
+
+  ws.onmessage = (event) => {
+    const message: WebSocketMessage = JSON.parse(event.data)
+
+    if (message.event === "dashboard_ready") {
+      callbacks.onDashboardReport(message.data as unknown as DashboardReport)
+    } else if (message.event === "error") {
+      callbacks.onError((message.data as { message?: string }).message ?? "Error desconocido")
+    } else {
+      callbacks.onEvent(message.event, message.data)
+    }
+  }
+
+  ws.onerror = () => callbacks.onError("No se pudo conectar al servidor")
+  ws.onclose = () => callbacks.onClose()
+
+  return () => ws.close()   // caller can use the returned function to close early
+}
+```
+
+`connectAndFetch` returns a cleanup function — `page.tsx` can call it to close the WebSocket if the user navigates away before extraction completes.
+
+### Configuration
+
+```bash
+# .env.local (development)
+NEXT_PUBLIC_BACKEND_WS_URL=ws://localhost:8000/ws
+
+# Production (Railway or Docker)
+NEXT_PUBLIC_BACKEND_WS_URL=wss://your-backend.railway.app/ws
+```
+
+The variable is read at **build time** and inlined into the client bundle. If it is not set, the client falls back to `ws://localhost:8000/ws`.
+
+<Warning>
+  Because `NEXT_PUBLIC_BACKEND_WS_URL` is a build-time variable, the Docker image must be built with the correct value for the target environment. Changing the backend URL after the image is built requires a rebuild.
+</Warning>
+
+---
+
+## Application State Machine
+
+`app/page.tsx` is the top-level state machine. It manages a single `AppView` discriminated union and renders the matching feature:
+
+```typescript
+type AppView = "hero" | "login" | "loading" | "done" | "error"
+```
+
+<Steps>
+  <Step title='"hero" — Landing page'>
+    `HeroSection` is displayed. Clicking the CTA transitions to `"login"`.
+  </Step>
+  <Step title='"login" — Credentials form'>
+    `LoginForm` is displayed. On submit, `connectAndFetch` is called and the view immediately transitions to `"loading"`.
+  </Step>
+  <Step title='"loading" — Extraction in progress'>
+    `AuthenticationProgress` is displayed. `onEvent` callbacks accumulate progress steps; each one is added to the visible step list. The current event label is shown as a subtitle under the active group.
+  </Step>
+  <Step title='"done" — Dashboard'>
+    Triggered by `onDashboardReport`. The full `DashboardReport` is stored in state and `DashboardLayout` is rendered. No further WebSocket communication occurs.
+  </Step>
+  <Step title='"error" — Error screen'>
+    Triggered by `onError` or an unexpected WebSocket close during `"loading"`. `ErrorScreen` shows the backend's user-facing message and offers a retry that resets to `"login"`.
+  </Step>
+</Steps>
+
+---
+
+## Authentication Progress UI
+
+`AuthenticationProgress` groups all backend events into four labelled stages displayed as a vertical stepper:
+
+| Stage | Backend events included |
+|---|---|
+| **Autenticando** | `opening_suv`, `loading_login`, `downloading_captcha`, `solving_captcha`, `submitting_login`, `selecting_student`, `authentication_success` |
+| **Perfil y matrícula** | `extracting_profile`, `profile_extraction_success/failed`, `extracting_record`, `record_extraction_success/failed`, `extracting_enrollment`, `enrollment_extraction_success/failed` |
+| **Notas y asistencia** | `extracting_attendance`, `attendance_extraction_success/failed`, `extracting_grades`, `grade_extraction_success`, `optimizing_schedule`, `schedule_optimized/failed` |
+| **Dashboard listo** | `dashboard_ready` |
+
+Each step circle shows a number (pending), a spinner (active), a gold checkmark (completed), or a red ✕ (error). The currently active step also shows the human-readable label from `EVENT_LABELS` as a subtitle.
+
+---
+
+## Key Types
+
+### `AuthProgressEvent`
+
+The complete union of all event strings that can arrive from the backend:
+
+```typescript
+export type AuthProgressEvent =
+  | "opening_suv"
+  | "loading_login"
+  | "downloading_captcha"
+  | "solving_captcha"
+  | "submitting_login"
+  | "selecting_student"
+  | "authentication_success"
+  | "authentication_failed"
+  | "extracting_profile"
+  | "profile_extraction_success"
+  | "profile_extraction_failed"
+  | "extracting_record"
+  | "record_extraction_success"
+  | "record_extraction_failed"
+  | "extracting_enrollment"
+  | "enrollment_extraction_success"
+  | "enrollment_extraction_failed"
+  | "extracting_attendance"
+  | "attendance_extraction_success"
+  | "attendance_extraction_failed"
+  | "extracting_grades"
+  | "extracting_academic_info"
+  | "extracting_courses"
+  | "grade_extraction_success"
+  | "grade_extraction_failed"
+  | "optimizing_schedule"
+  | "schedule_optimized"
+  | "schedule_optimization_failed"
+  | "dashboard_ready"
+  | "dashboard_extraction_failed"
+  | "error"
+```
+
+### `WebSocketMessage`
+
+The envelope type for every raw message received from the backend:
+
+```typescript
+export interface WebSocketMessage {
+  event: AuthProgressEvent
+  data: Record<string, unknown>
+}
+```
+
+### `EVENT_LABELS`
+
+A `Record<string, string>` map from event name to its Spanish display label, used by `AuthenticationProgress` to render human-readable subtitles:
+
+```typescript
+export const EVENT_LABELS: Record<string, string> = {
+  opening_suv:                  "Abriendo SUV...",
+  loading_login:                "Cargando pantalla de login...",
+  downloading_captcha:          "Descargando captcha...",
+  solving_captcha:              "Resolviendo captcha...",
+  submitting_login:             "Iniciando sesión...",
+  selecting_student:            "Seleccionando perfil Alumno...",
+  authentication_success:       "Autenticación exitosa",
+  authentication_failed:        "Autenticación fallida",
+  extracting_profile:           "Extrayendo perfil...",
+  profile_extraction_success:   "Perfil extraído",
+  profile_extraction_failed:    "Perfil no disponible",
+  extracting_record:            "Extrayendo record académico...",
+  record_extraction_success:    "Record extraído",
+  record_extraction_failed:     "Record no disponible",
+  extracting_enrollment:        "Extrayendo matrícula...",
+  enrollment_extraction_success:"Matrícula extraída",
+  enrollment_extraction_failed: "Matrícula no disponible",
+  extracting_attendance:        "Extrayendo asistencia...",
+  attendance_extraction_success:"Asistencia extraída",
+  attendance_extraction_failed: "Asistencia no disponible",
+  extracting_grades:            "Extrayendo notas...",
+  extracting_academic_info:     "Extrayendo información académica...",
+  extracting_courses:           "Extrayendo cursos...",
+  grade_extraction_success:     "Notas extraídas",
+  grade_extraction_failed:      "Error al extraer notas",
+  optimizing_schedule:          "Optimizando horario...",
+  schedule_optimized:           "Horario optimizado",
+  schedule_optimization_failed: "Optimización no disponible",
+  dashboard_ready:              "Dashboard listo",
+  dashboard_extraction_failed:  "Error al extraer datos",
+  error:                        "Error",
+}
+```
+
+### `DashboardReport`
+
+The top-level payload delivered by `onDashboardReport`. It is the TypeScript mirror of the `DashboardReportDto` serialized by the backend's `WebSocketHandler._serialize()` method:
+
+```typescript
+// Defined in features/dashboard/types/dashboard_types.ts
+interface DashboardReport {
+  grade_report:        GradeReport
+  student_profile:     StudentProfile | null
+  academic_record:     AcademicRecord | null
+  attendance:          AttendanceSummary[]
+  schedule:            ScheduleSlot[]
+  enrollment:          Enrollment | null
+  optimized_schedules: OptimizedSchedule[]
+  analytics:           AcademicAnalytics | null
+}
+```
+
+<Note>
+  Fields marked `| null` correspond to non-fatal extractors in the backend. The frontend always checks for `null` before rendering these sections and shows a graceful "not available" message when the data is absent.
+</Note>
+
+---
+
+## Dashboard Layout and Navigation
+
+`DashboardLayout` renders a persistent two-column shell:
+
+- **Left**: `SidebarNav` — a vertical list of tab links. On mobile it is an off-canvas drawer toggled by a hamburger button. Includes the student's name, an attention badge when any course is at attendance risk, and a "Cerrar sesión" / reset link.
+- **Right**: a scrollable main area containing the `DashboardHeader` (student metadata), the CSV export button, and the `DashboardTabs` content pane.
+
+`DashboardTabs` receives the active tab name and the full `DashboardReport`, then renders the matching feature component. Tab routing is pure React state — there is no Next.js router involvement after the initial page load.
+
+```typescript
+// Tab identifiers defined in sidebar_nav.tsx
+type Tab =
+  | "inicio"
+  | "notas"
+  | "horario"
+  | "mejor_horario"
+  | "asistencia"
+  | "record"
+  | "analiticas"
+  | "perfil"
+```
+
+The CSV export in the header calls `exportGradesCsv(gradeReport, studentName)`, which builds a comma-separated file in memory and triggers a browser download — no server round-trip.

@@ -1,0 +1,191 @@
+---
+title: "Troubleshoot Common Unitru Academic Issues"
+sidebarTitle: "Troubleshooting"
+description: "Diagnose and resolve common issues with CAPTCHA solving, SUV connectivity, schedule catalog misses, Railway deployment, and WebSocket connection failures."
+---
+
+Most issues with Unitru Academic fall into three categories: CAPTCHA or authentication failures during the automated login flow, SUV navigation or extraction errors caused by portal changes, and deployment or connectivity problems specific to the Docker or Railway environment. Use the sections below to identify and resolve the most common problems.
+
+## Domain exception reference
+
+The backend maps every known failure mode to a user-facing error message sent over the WebSocket as an `error` event. The table below lists each exception class, its location in the codebase, and the Spanish message the frontend displays.
+
+| Exception class | User-facing message |
+|---|---|
+| `CaptchaError` | No se pudo resolver el captcha. Intenta nuevamente. |
+| `AuthenticationError` | No se pudo iniciar sesión. Revisa tu usuario y contraseña. |
+| `NavigationError` | Hubo un problema navegando en el SUV. Intenta nuevamente. |
+| `ExtractionError` | No se pudieron extraer las notas. Intenta nuevamente. |
+| `SuvTimeoutError` | El SUV tardó demasiado en responder. Intenta más tarde. |
+| `SuvUnavailableError` | El SUV no está disponible en este momento. |
+
+All exceptions above inherit from the base `SuvError` class defined in `backend/src/domain/exceptions/suv_errors.py`. An unrecognised exception type falls through to the generic message: *"Ocurrió un error inesperado. Intenta nuevamente."*
+
+---
+
+## Authentication and CAPTCHA
+
+<Accordion title="Login fails / CAPTCHA not solved">
+  The backend uses Tesseract OCR to solve the SUV's image CAPTCHA, with up to **3 automatic retries** per WebSocket session. A `CaptchaError` is raised only when all retries are exhausted.
+
+  **Steps to diagnose:**
+
+  1. Try again — transient OCR failures are normal and a fresh session often succeeds.
+  2. If the error is consistent across many attempts, the SUV may have changed its CAPTCHA image format or the image element selector. Run `inspect_suv_login.py` to dump the current page structure:
+
+     ```bash
+     python3 scripts/inspect_suv_login.py
+     ```
+
+  3. Check the `=== IMAGENES ===` section of the output. The CAPTCHA image should appear with `id="imgCaptcha"` and `src="/captcha.php"`. If the selector has changed, update `SuvAuthenticator` in `backend/src/infrastructure/playwright/suv_authenticator.py` to match.
+</Accordion>
+
+<Accordion title="Authentication error after entering correct credentials">
+  An `AuthenticationError` is raised when the SUV login form rejects the submitted credentials — even if they are correct. This can happen for several reasons unrelated to the app:
+
+  - The SUV portal may be temporarily blocking sessions (rate limiting or IP-based blocks).
+  - The portal may be in a transient error state after a maintenance window.
+  - The student's account may have a restriction set by the university.
+
+  **Steps to resolve:**
+
+  1. Wait a few minutes and try again.
+  2. Try logging in manually at `https://suv2.unitru.edu.pe/` to confirm credentials work.
+  3. If manual login succeeds but the app continues to fail, run `inspect_suv_login.py` to check whether the form field names have changed.
+</Accordion>
+
+---
+
+## SUV availability
+
+<Accordion title="SUV is unavailable (SuvUnavailableError)">
+  A `SuvUnavailableError` means the SUV portal is unreachable or returned a response that indicates it is offline. The app cannot work around this — the dashboard data must be fetched live from the portal during the session.
+
+  **Steps to resolve:**
+
+  1. Check `https://suv2.unitru.edu.pe/` directly in your browser to confirm the portal status.
+  2. Contact UNITRU's IT department (`sistemasweb@unitru.edu.pe` or through the university's official channels) if the outage persists.
+  3. There is nothing to fix on the app side. Retry once the portal is back online.
+</Accordion>
+
+<Accordion title="Timeout errors (SuvTimeoutError)">
+  A `SuvTimeoutError` is raised when a page load or navigation step within the SUV exceeds the configured Playwright timeout. The portal is known to respond slowly under heavy load, particularly at the start of a semester when many students access it simultaneously.
+
+  **Steps to resolve:**
+
+  1. Try again later, especially outside peak hours (early morning or late evening).
+  2. If timeouts are systematic, check whether the SUV portal itself is slow to respond in a normal browser.
+  3. This is not a bug in the app — the Playwright timeout values are already generous.
+</Accordion>
+
+---
+
+## Navigation and extraction
+
+<Accordion title="Navigation or extraction errors">
+  A `NavigationError` is raised when Playwright cannot locate or interact with an expected page element during the post-login flow. An `ExtractionError` is raised when the data parsing logic finds an unexpected table structure or missing element.
+
+  Both errors typically mean the SUV has changed its page structure since the last time the extractors were updated.
+
+  **Steps to diagnose:**
+
+  1. Run the full end-to-end test script with real credentials to see the raw Python traceback:
+
+     ```bash
+     python3 scripts/test_full_dashboard.py <usuario> <contraseña>
+     ```
+
+  2. The traceback will identify which extractor failed (e.g. `SuvGradeExtractor`, `SuvAttendanceExtractor`) and which CSS selector or element was not found.
+  3. Open the corresponding extractor in `backend/src/infrastructure/playwright/` and update the failing selector to match the current SUV markup.
+  4. Use `inspect_suv_login.py` as a reference for the login page; for post-login pages you may need to add similar inspection logic or use Playwright's `page.pause()` in a headed browser.
+</Accordion>
+
+---
+
+## Schedule optimizer
+
+<Accordion title="Course missing from schedule optimizer results">
+  If a course does not appear in the optimized schedule suggestions, or is listed in the `missing` array, it means `data/horarios_catalogo.json` does not contain any section for that course in the current catalog.
+
+  **Steps to resolve:**
+
+  1. Check the `missing` list in the `optimized_schedules` payload returned by the backend.
+  2. Verify that the course name matches the exact spelling used in the official Google Sheets schedule (including accents and Roman numerals).
+  3. Re-download and re-parse the catalog with the latest spreadsheet URL:
+
+     ```bash
+     python3 scripts/download_horarios.py "<url_del_sheet>"
+     python3 scripts/parse_horarios.py
+     ```
+
+  4. Run `test_optimizer.py` to confirm the course now appears:
+
+     ```bash
+     python3 scripts/test_optimizer.py "Nombre del Curso"
+     ```
+
+  5. Commit the updated `data/horarios_catalogo.json` and redeploy the backend so the new catalog is baked into the Docker image.
+</Accordion>
+
+---
+
+## WebSocket connectivity
+
+<Accordion title="Frontend can't connect to backend (WebSocket error or blank dashboard)">
+  The frontend opens a WebSocket connection to the URL embedded in `NEXT_PUBLIC_BACKEND_WS_URL` at page load. If this URL is wrong or the backend is unreachable, the dashboard will never receive data.
+
+  **Steps to diagnose:**
+
+  1. Open the browser developer tools → Network tab → filter by "WS". Check that a WebSocket connection is being attempted to the correct URL.
+  2. Verify that `NEXT_PUBLIC_BACKEND_WS_URL` points to the correct backend address:
+     - **Local:** `ws://localhost:8000/ws`
+     - **Railway production:** `wss://your-backend-domain.up.railway.app/ws`
+  3. In Railway, ensure the variable uses the `wss://` scheme (TLS). Using `ws://` over a Railway HTTPS domain will fail because Railway's proxy enforces TLS.
+  4. Confirm the backend `/health` endpoint is reachable:
+
+     ```bash
+     curl https://your-backend-domain.up.railway.app/health
+     # Expected: {"status":"ok"}
+     ```
+
+  5. Verify that `ALLOWED_ORIGINS` on the backend includes the exact frontend origin (scheme + domain, no trailing slash). A CORS rejection will prevent the WebSocket upgrade.
+</Accordion>
+
+---
+
+## Railway deployment
+
+<Accordion title="Frontend shows blank page or 502 after deploy">
+  This almost always means `NEXT_PUBLIC_BACKEND_WS_URL` was not available during the Docker build, so the Next.js bundle was compiled with the default `ws://localhost:8000/ws` instead of the production URL.
+
+  **Steps to resolve:**
+
+  1. Confirm the variable is set in the Railway **Variables** tab of the frontend service — not in a `.env` file or post-build setting.
+  2. Check that it is wired as a **build argument** (Railway passes `NEXT_PUBLIC_*` variables automatically as Docker build args when set in the Variables tab).
+  3. If the variable was added or changed after the last build, trigger a manual **Redeploy** in Railway to force a fresh `docker build` with the correct value.
+  4. Check the Railway build logs for a line like:
+
+     ```
+     ENV NEXT_PUBLIC_BACKEND_WS_URL=wss://unitru-backend.up.railway.app/ws
+     ```
+
+     If you see `ws://localhost:8000/ws` there instead, the variable was not picked up.
+</Accordion>
+
+<Accordion title="First Docker build is very slow">
+  This is expected behavior. The backend `Dockerfile` installs Tesseract OCR via `apt-get` and then runs `playwright install --with-deps chromium`, which downloads the Chromium browser binary and all of its system library dependencies. Together these downloads total approximately **500 MB**.
+
+  Subsequent builds are fast because Docker caches the layers for the system packages and the Playwright browser installation. The cache is invalidated only when `requirements.txt` changes or when the base image is updated.
+
+  There is nothing to fix — wait for the first build to complete.
+</Accordion>
+
+---
+
+## Grades display
+
+<Accordion title="Grades show None instead of numbers">
+  A grade field showing `None` in the dashboard means the professor has not yet entered that grade in the SUV. The backend uses Python `Decimal` for all grade values and explicitly represents unpublished grades as `None` — never as `0` or an empty string — to distinguish "not yet graded" from "graded zero".
+
+  This is intentional behavior, not a bug. No action is needed on the app side. The grade will appear once the professor publishes it in the SUV.
+</Accordion>

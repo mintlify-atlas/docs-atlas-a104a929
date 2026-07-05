@@ -1,0 +1,845 @@
+---
+title: "Unitru Academic Data Models: DashboardReport and Sub-types"
+sidebarTitle: "Data Models"
+description: "TypeScript and Python type definitions for the DashboardReport payload and all nested sub-types returned in the dashboard_ready WebSocket event."
+---
+
+When the `dashboard_ready` event fires, its `data` field contains a `DashboardReport` object — the single compound payload that bundles every piece of academic data the backend has successfully extracted from the SUV. This page documents every field of that root object and all of its nested types, cross-referencing the TypeScript interfaces (used by the frontend) and Python dataclasses (used by the backend serializer).
+
+<Note>
+  All numeric grade values in the payload are serialized as **strings** — for example `"14"`, `"13.50"`, `"7"`. This is because the backend computes grades using Python's `Decimal` type for precision, and `Decimal` is serialized as a string to avoid IEEE 754 rounding artefacts. Parse grade strings in the frontend with `parseFloat()` or a `Decimal` library (e.g. `new Decimal(course.u1)`) before doing arithmetic.
+</Note>
+
+## Listening for dashboard_ready
+
+```typescript
+ws.onmessage = (event) => {
+  const { event: name, data } = JSON.parse(event.data)
+  if (name === "dashboard_ready") {
+    const report = data as DashboardReport
+    console.log(report.grade_report.courses)
+  }
+}
+```
+
+---
+
+## DashboardReport
+
+The root object delivered in the `dashboard_ready` event's `data` field.
+
+<ResponseField name="grade_report" type="GradeReport" required>
+  Current-cycle grades for all enrolled courses, including per-unit scores, final grades, and grade predictions. Always present (though `courses` may be empty if extraction failed).
+  <Expandable title="GradeReport fields">
+    <ResponseField name="period" type="string | null">
+      Academic period identifier, e.g. `"2024-I"`.
+    </ResponseField>
+    <ResponseField name="payment_order" type="string | null">
+      The student's payment order code for the current period.
+    </ResponseField>
+    <ResponseField name="enrollment_type" type="string | null">
+      The enrollment modality for this period, e.g. regular or special enrollment.
+    </ResponseField>
+    <ResponseField name="courses" type="CourseGrade[]">
+      Array of individual course grade records. See **CourseGrade** below.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="student_profile" type="StudentProfile | null">
+  Personal and academic profile information scraped from the student info page. `null` when profile extraction failed.
+</ResponseField>
+
+<ResponseField name="academic_record" type="AcademicRecord | null">
+  Full historical course record covering all academic periods the student has attended. `null` when record extraction failed.
+</ResponseField>
+
+<ResponseField name="attendance" type="AttendanceSummary[]">
+  Per-course attendance summary for the current period. Empty array when attendance extraction failed.
+</ResponseField>
+
+<ResponseField name="schedule" type="ScheduleSlot[]">
+  The student's weekly schedule, derived from attendance session data and cross-referenced with the enrollment sheet. Empty array when attendance data is unavailable.
+</ResponseField>
+
+<ResponseField name="enrollment" type="Enrollment | null">
+  Current-period enrollment record listing all enrolled courses with credits and group assignments. `null` when enrollment extraction failed.
+</ResponseField>
+
+<ResponseField name="optimized_schedules" type="OptimizedSchedule[]">
+  Top-5 optimized, conflict-free schedule combinations computed from the official course catalog for the next period. Empty array when optimisation failed or no catalog data is available.
+</ResponseField>
+
+<ResponseField name="analytics" type="AcademicAnalytics | null">
+  Aggregated period-by-period academic statistics derived from the full course history. `null` when the academic record is unavailable.
+</ResponseField>
+
+---
+
+## Sub-types
+
+### CourseGrade
+
+One row in `grade_report.courses`. Represents a single enrolled course with all published unit scores.
+
+<Expandable title="CourseGrade fields">
+  <ResponseField name="course_id" type="string">
+    The official SUV course identifier code.
+  </ResponseField>
+  <ResponseField name="course_name" type="string">
+    The full course name as displayed in the SUV.
+  </ResponseField>
+  <ResponseField name="attempt" type="number">
+    How many times the student has enrolled in this course (1 = first attempt).
+  </ResponseField>
+  <ResponseField name="u1" type="string | null">
+    Unit 1 grade, serialized as a decimal string, or `null` if not yet published.
+  </ResponseField>
+  <ResponseField name="u2" type="string | null">
+    Unit 2 grade, or `null` if not yet published.
+  </ResponseField>
+  <ResponseField name="u3" type="string | null">
+    Unit 3 grade, or `null` if not yet published.
+  </ResponseField>
+  <ResponseField name="u4" type="string | null">
+    Unit 4 grade, or `null` if not yet published.
+  </ResponseField>
+  <ResponseField name="u5" type="string | null">
+    Unit 5 grade, or `null` if not yet published.
+  </ResponseField>
+  <ResponseField name="u6" type="string | null">
+    Unit 6 grade, or `null` if not yet published.
+  </ResponseField>
+  <ResponseField name="sust" type="string | null">
+    Sustentación (oral/practical assessment) grade, or `null`.
+  </ResponseField>
+  <ResponseField name="np" type="string | null">
+    NP (No Presentado — did not attend exam) grade marker, or `null`.
+  </ResponseField>
+  <ResponseField name="apla" type="string | null">
+    APLA (aplazado — deferred) grade marker, or `null`.
+  </ResponseField>
+  <ResponseField name="final_grade" type="string | null">
+    Computed final grade for the course, or `null` if the period is still in progress.
+  </ResponseField>
+  <ResponseField name="inh" type="boolean">
+    `true` when the course is marked as inhabilitado (disqualified due to excessive absences).
+  </ResponseField>
+  <ResponseField name="average" type="string | null">
+    Running average of the published units (partial average during the cycle). `null` when no units have been published yet.
+  </ResponseField>
+  <ResponseField name="prediction" type="CoursePrediction | null">
+    Grade prediction object computed from published units. `null` when insufficient data is available to compute a meaningful prediction.
+  </ResponseField>
+</Expandable>
+
+### CoursePrediction
+
+Attached to a `CourseGrade` when the backend can project what minimum scores are needed in pending units for the student to pass.
+
+<Expandable title="CoursePrediction fields">
+  <ResponseField name="course_id" type="string">
+    The course identifier this prediction belongs to.
+  </ResponseField>
+  <ResponseField name="course_name" type="string">
+    The course name.
+  </ResponseField>
+  <ResponseField name="total_units" type="number">
+    Total number of graded units in this course.
+  </ResponseField>
+  <ResponseField name="known" type="object">
+    A map of published unit keys to their grade strings, e.g. `{"u1": "14", "u2": "12"}`.
+  </ResponseField>
+  <ResponseField name="pending" type="string[]">
+    Array of unit keys that have not yet been published, e.g. `["u3", "u4"]`.
+  </ResponseField>
+  <ResponseField name="required_pending_sum" type="string">
+    The total sum of grades required across all pending units for the student to pass the course (minimum passing grade of 11 at UNT).
+  </ResponseField>
+  <ResponseField name="min_per_pending" type="string">
+    The minimum grade required in each pending unit, assuming equal scores across all pending units.
+  </ResponseField>
+  <ResponseField name="is_possible" type="boolean">
+    `true` when it is still mathematically possible to pass the course given pending units.
+  </ResponseField>
+  <ResponseField name="already_passes" type="boolean">
+    `true` when the student already has enough points to pass regardless of remaining units.
+  </ResponseField>
+  <ResponseField name="combinations" type="object[]">
+    An array of possible grade combinations for the pending units that would result in a passing final grade. Each combination is a map of unit key to required integer score.
+  </ResponseField>
+</Expandable>
+
+### StudentProfile
+
+Personal and institutional information for the student.
+
+<Expandable title="StudentProfile fields">
+  <ResponseField name="full_name" type="string">
+    The student's full name as it appears in the SUV.
+  </ResponseField>
+  <ResponseField name="first_name" type="string">
+    The student's given name(s).
+  </ResponseField>
+  <ResponseField name="last_name" type="string">
+    The student's family name(s).
+  </ResponseField>
+  <ResponseField name="enrollment_number" type="string">
+    The university registration/enrollment code (código de matrícula).
+  </ResponseField>
+  <ResponseField name="faculty" type="string">
+    The faculty (facultad) the student belongs to.
+  </ResponseField>
+  <ResponseField name="school" type="string">
+    The school or programme (escuela) within the faculty.
+  </ResponseField>
+  <ResponseField name="campus" type="string">
+    The campus where the student is enrolled.
+  </ResponseField>
+  <ResponseField name="admission_year" type="number | null">
+    The year the student was admitted to UNT, or `null` if not available.
+  </ResponseField>
+  <ResponseField name="institutional_email" type="string | null">
+    The student's `@unitru.edu.pe` institutional email, or `null`.
+  </ResponseField>
+  <ResponseField name="personal_email" type="string | null">
+    The student's personal email registered in the SUV, or `null`.
+  </ResponseField>
+  <ResponseField name="phone" type="string | null">
+    Contact phone number, or `null`.
+  </ResponseField>
+  <ResponseField name="document" type="string | null">
+    National ID document number (DNI), or `null`.
+  </ResponseField>
+  <ResponseField name="birth_date" type="string | null">
+    Date of birth as a string in the format returned by the SUV, or `null`.
+  </ResponseField>
+  <ResponseField name="sex" type="string | null">
+    Sex as recorded in the SUV, or `null`.
+  </ResponseField>
+  <ResponseField name="marital_status" type="string | null">
+    Marital status as recorded in the SUV, or `null`.
+  </ResponseField>
+  <ResponseField name="address" type="string | null">
+    Home address registered in the SUV, or `null`.
+  </ResponseField>
+  <ResponseField name="curriculum" type="string | null">
+    The curricular plan (plan de estudios) the student is enrolled under, or `null`.
+  </ResponseField>
+  <ResponseField name="condition" type="string | null">
+    Academic condition (e.g. regular, irregular), or `null`.
+  </ResponseField>
+  <ResponseField name="photo_data_url" type="string | null">
+    The student's photo encoded as a Base64 data URL (e.g. `"data:image/jpeg;base64,/9j/4AAQ..."`). Render it directly in an `<img src={...} />` tag. `null` when no photo is available.
+  </ResponseField>
+</Expandable>
+
+### AcademicRecord
+
+Complete historical course record across all academic periods.
+
+<Expandable title="AcademicRecord fields">
+  <ResponseField name="student_name" type="string">
+    The student's full name as it appears in the academic record page.
+  </ResponseField>
+  <ResponseField name="enrollment_number" type="string">
+    The university registration code.
+  </ResponseField>
+  <ResponseField name="condition" type="string">
+    The student's current academic condition (e.g. "Regular").
+  </ResponseField>
+  <ResponseField name="accumulated_credits" type="number">
+    Total credits accumulated across all passed courses.
+  </ResponseField>
+  <ResponseField name="weighted_average" type="string">
+    Cumulative weighted grade average across all periods, serialized as a decimal string.
+  </ResponseField>
+  <ResponseField name="payment_status" type="string | null">
+    Payment status shown on the record page, or `null`.
+  </ResponseField>
+  <ResponseField name="payment_order" type="string | null">
+    Payment order code shown on the record page, or `null`.
+  </ResponseField>
+  <ResponseField name="courses" type="CourseHistory[]">
+    Full list of historical course records. See **CourseHistory** below.
+  </ResponseField>
+</Expandable>
+
+### CourseHistory
+
+A single course entry in the full academic history.
+
+<Expandable title="CourseHistory fields">
+  <ResponseField name="period" type="string">
+    The academic period in which this course was taken, e.g. `"2023-II"`.
+  </ResponseField>
+  <ResponseField name="course_id" type="string">
+    The official SUV course identifier code.
+  </ResponseField>
+  <ResponseField name="course_name" type="string">
+    The course name.
+  </ResponseField>
+  <ResponseField name="attempt" type="number">
+    The attempt number for this course (1 = first time).
+  </ResponseField>
+  <ResponseField name="cycle" type="number">
+    The curricular cycle (semester) this course belongs to.
+  </ResponseField>
+  <ResponseField name="credits" type="number">
+    Credit value of the course.
+  </ResponseField>
+  <ResponseField name="course_type" type="string">
+    Type of course (e.g. obligatorio, electivo).
+  </ResponseField>
+  <ResponseField name="section" type="string | null">
+    Section code, or `null`.
+  </ResponseField>
+  <ResponseField name="group" type="string | null">
+    Group code, or `null`.
+  </ResponseField>
+  <ResponseField name="final_grade" type="string | null">
+    Final grade for this historical entry, or `null`.
+  </ResponseField>
+  <ResponseField name="is_disabled" type="boolean">
+    `true` when this course row is marked as disabled/inactive in the record (e.g. annulled enrollment).
+  </ResponseField>
+</Expandable>
+
+### AttendanceSummary
+
+Attendance summary for one course in the current period.
+
+<Expandable title="AttendanceSummary fields">
+  <ResponseField name="course_id" type="string">
+    The course identifier.
+  </ResponseField>
+  <ResponseField name="course_name" type="string">
+    The course name.
+  </ResponseField>
+  <ResponseField name="teacher" type="string | null">
+    The teacher's name, or `null` if not available.
+  </ResponseField>
+  <ResponseField name="total_sessions" type="number">
+    Total number of class sessions scheduled so far.
+  </ResponseField>
+  <ResponseField name="attended" type="number">
+    Number of sessions the student attended.
+  </ResponseField>
+  <ResponseField name="absent" type="number">
+    Number of sessions the student was absent.
+  </ResponseField>
+  <ResponseField name="justified" type="number">
+    Number of absences that were officially justified.
+  </ResponseField>
+  <ResponseField name="attendance_percentage" type="string">
+    Attendance rate as a decimal string, e.g. `"87.50"`. Represents the percentage of sessions attended.
+  </ResponseField>
+  <ResponseField name="is_at_risk" type="boolean">
+    `true` when the student's attendance is below the minimum threshold (typically 70%) and they risk being marked inhabilitado.
+  </ResponseField>
+</Expandable>
+
+### ScheduleSlot
+
+One time block in the student's weekly timetable.
+
+<Expandable title="ScheduleSlot fields">
+  <ResponseField name="day" type="string">
+    Day of the week, e.g. `"Lunes"`, `"Martes"`.
+  </ResponseField>
+  <ResponseField name="start_time" type="string">
+    Session start time, e.g. `"08:00"`.
+  </ResponseField>
+  <ResponseField name="end_time" type="string">
+    Session end time, e.g. `"10:00"`.
+  </ResponseField>
+  <ResponseField name="course_name" type="string">
+    The course name for this slot.
+  </ResponseField>
+  <ResponseField name="classroom" type="string | null">
+    Classroom or room identifier, or `null`.
+  </ResponseField>
+  <ResponseField name="teacher" type="string | null">
+    Teacher name, or `null`.
+  </ResponseField>
+  <ResponseField name="group" type="string | null">
+    Group code, populated by cross-referencing the enrollment sheet with the attendance data. `null` when no match is found.
+  </ResponseField>
+</Expandable>
+
+### Enrollment
+
+The student's current-period enrollment record.
+
+<Expandable title="Enrollment fields">
+  <ResponseField name="period" type="string">
+    The current academic period identifier, e.g. `"2024-I"`.
+  </ResponseField>
+  <ResponseField name="total_credits" type="number">
+    Total number of credits enrolled in this period.
+  </ResponseField>
+  <ResponseField name="courses" type="EnrolledCourse[]">
+    List of courses the student is enrolled in. See **EnrolledCourse** below.
+  </ResponseField>
+</Expandable>
+
+### EnrolledCourse
+
+A single course in the current enrollment record.
+
+<Expandable title="EnrolledCourse fields">
+  <ResponseField name="cycle" type="string">
+    Curricular cycle this course belongs to, e.g. `"III"`.
+  </ResponseField>
+  <ResponseField name="course_id" type="string">
+    The official course identifier code.
+  </ResponseField>
+  <ResponseField name="course_name" type="string">
+    The course name.
+  </ResponseField>
+  <ResponseField name="course_type" type="string">
+    Course type (e.g. obligatorio, electivo).
+  </ResponseField>
+  <ResponseField name="credits" type="number">
+    Credit value of the course.
+  </ResponseField>
+  <ResponseField name="group" type="string">
+    The group/section the student is enrolled in.
+  </ResponseField>
+  <ResponseField name="attempt" type="number">
+    Attempt number for this enrollment.
+  </ResponseField>
+  <ResponseField name="teacher" type="string | null">
+    Teacher name, or `null` if not yet assigned.
+  </ResponseField>
+</Expandable>
+
+### OptimizedSchedule
+
+One candidate schedule combination produced by the schedule optimisation engine.
+
+<Expandable title="OptimizedSchedule fields">
+  <ResponseField name="score" type="number">
+    Composite optimisation score. **Lower is better.** Computed as a weighted sum of days on campus, gap minutes between sessions, and early/late extreme sessions.
+  </ResponseField>
+  <ResponseField name="days" type="number">
+    Number of distinct days on campus required by this schedule.
+  </ResponseField>
+  <ResponseField name="gap_minutes" type="number">
+    Total idle gap minutes between consecutive sessions across all days.
+  </ResponseField>
+  <ResponseField name="extreme_sessions" type="number">
+    Number of sessions that fall in early-morning or late-evening time slots (penalised in scoring).
+  </ResponseField>
+  <ResponseField name="selections" type="OptimizedSelection[]">
+    One selection entry per course showing which section and sub-group were chosen. See **OptimizedSelection** below.
+  </ResponseField>
+  <ResponseField name="sessions" type="OptimizedSession[]">
+    The complete flat list of all scheduled session time blocks for this candidate. See **OptimizedSession** below.
+  </ResponseField>
+</Expandable>
+
+### OptimizedSelection
+
+Which section/group was selected for a given course in an optimized schedule.
+
+<Expandable title="OptimizedSelection fields">
+  <ResponseField name="course" type="string">
+    The course name or identifier.
+  </ResponseField>
+  <ResponseField name="cycle" type="string | null">
+    The curricular cycle, or `null`.
+  </ResponseField>
+  <ResponseField name="section" type="string | null">
+    The chosen section, or `null`.
+  </ResponseField>
+  <ResponseField name="subgroup" type="string | null">
+    The chosen laboratory or practical sub-group, or `null` for courses without sub-groups.
+  </ResponseField>
+</Expandable>
+
+### OptimizedSession
+
+A single time block within an optimized schedule candidate.
+
+<Expandable title="OptimizedSession fields">
+  <ResponseField name="course" type="string">
+    The course name or identifier.
+  </ResponseField>
+  <ResponseField name="tipo" type="string | null">
+    Session type (e.g. `"T"` for teoría, `"P"` for práctica, `"L"` for laboratorio), or `null`.
+  </ResponseField>
+  <ResponseField name="day" type="string">
+    Day of the week for this session, e.g. `"Lunes"`.
+  </ResponseField>
+  <ResponseField name="start_time" type="string">
+    Session start time, e.g. `"08:00"`.
+  </ResponseField>
+  <ResponseField name="end_time" type="string">
+    Session end time, e.g. `"10:00"`.
+  </ResponseField>
+  <ResponseField name="room" type="string | null">
+    Room or classroom identifier, or `null`.
+  </ResponseField>
+  <ResponseField name="subgroup" type="string | null">
+    Sub-group identifier for this session, or `null`.
+  </ResponseField>
+  <ResponseField name="teacher" type="string | null">
+    Teacher name for this session, or `null`.
+  </ResponseField>
+  <ResponseField name="section" type="string | null">
+    Section identifier for this session, or `null`.
+  </ResponseField>
+</Expandable>
+
+### AcademicAnalytics
+
+Aggregated statistics derived from the full academic history.
+
+<Expandable title="AcademicAnalytics fields">
+  <ResponseField name="period_stats" type="PeriodStat[]">
+    Per-period breakdown of performance metrics. See **PeriodStat** below.
+  </ResponseField>
+  <ResponseField name="total_courses" type="number">
+    Total number of distinct course enrollments in the student's history.
+  </ResponseField>
+  <ResponseField name="total_passed" type="number">
+    Total number of courses the student has passed.
+  </ResponseField>
+  <ResponseField name="total_failed" type="number">
+    Total number of courses the student has failed.
+  </ResponseField>
+  <ResponseField name="overall_pass_rate" type="string">
+    Overall pass rate as a decimal string, e.g. `"85.00"` (representing 85%).
+  </ResponseField>
+  <ResponseField name="retried_course_names" type="string[]">
+    Names of courses the student has had to retry (enrolled more than once).
+  </ResponseField>
+  <ResponseField name="best_period" type="string | null">
+    The academic period with the highest weighted average, e.g. `"2022-II"`, or `null` when history is empty.
+  </ResponseField>
+  <ResponseField name="worst_period" type="string | null">
+    The academic period with the lowest weighted average, or `null` when history is empty.
+  </ResponseField>
+</Expandable>
+
+### PeriodStat
+
+Statistics for a single academic period, used to build historical performance charts.
+
+<Expandable title="PeriodStat fields">
+  <ResponseField name="period" type="string">
+    Academic period identifier, e.g. `"2023-I"`.
+  </ResponseField>
+  <ResponseField name="courses_taken" type="number">
+    Number of courses enrolled in this period.
+  </ResponseField>
+  <ResponseField name="courses_passed" type="number">
+    Number of courses passed in this period.
+  </ResponseField>
+  <ResponseField name="courses_failed" type="number">
+    Number of courses failed in this period.
+  </ResponseField>
+  <ResponseField name="pass_rate" type="string">
+    Pass rate for this period as a decimal string, e.g. `"75.00"`.
+  </ResponseField>
+  <ResponseField name="weighted_average" type="string">
+    Weighted grade average for this period as a decimal string, e.g. `"13.50"`.
+  </ResponseField>
+</Expandable>
+
+---
+
+## TypeScript Type Reference
+
+<CodeGroup>
+
+```typescript DashboardReport
+import type { GradeReport } from "@/features/grades/types/grade_types"
+
+export interface DashboardReport {
+  grade_report: GradeReport
+  student_profile: StudentProfile | null
+  academic_record: AcademicRecord | null
+  attendance: AttendanceSummary[]
+  schedule: ScheduleSlot[]
+  enrollment: Enrollment | null
+  optimized_schedules: OptimizedSchedule[]
+  analytics: AcademicAnalytics | null
+}
+```
+
+```typescript GradeReport & CourseGrade
+export interface CoursePrediction {
+  course_id: string
+  course_name: string
+  total_units: number
+  known: Record<string, string>
+  pending: string[]
+  required_pending_sum: string
+  min_per_pending: string
+  is_possible: boolean
+  already_passes: boolean
+  combinations: Record<string, number>[]
+}
+
+export interface Course {
+  course_id: string
+  course_name: string
+  attempt: number
+  u1: string | null
+  u2: string | null
+  u3: string | null
+  u4: string | null
+  u5: string | null
+  u6: string | null
+  sust: string | null
+  np: string | null
+  apla: string | null
+  final_grade: string | null
+  inh: boolean
+  average: string | null
+  prediction: CoursePrediction | null
+}
+
+export interface GradeReport {
+  period: string | null
+  payment_order: string | null
+  enrollment_type: string | null
+  courses: Course[]
+}
+```
+
+```typescript StudentProfile
+export interface StudentProfile {
+  full_name: string
+  first_name: string
+  last_name: string
+  enrollment_number: string
+  faculty: string
+  school: string
+  campus: string
+  admission_year: number | null
+  institutional_email: string | null
+  personal_email: string | null
+  phone: string | null
+  document: string | null
+  birth_date: string | null
+  sex: string | null
+  marital_status: string | null
+  address: string | null
+  curriculum: string | null
+  condition: string | null
+  photo_data_url: string | null
+}
+```
+
+```typescript AcademicRecord
+export interface CourseHistory {
+  period: string
+  course_id: string
+  course_name: string
+  attempt: number
+  cycle: number
+  credits: number
+  course_type: string
+  section: string | null
+  group: string | null
+  final_grade: string | null
+  is_disabled: boolean
+}
+
+export interface AcademicRecord {
+  student_name: string
+  enrollment_number: string
+  condition: string
+  accumulated_credits: number
+  weighted_average: string
+  payment_status: string | null
+  payment_order: string | null
+  courses: CourseHistory[]
+}
+```
+
+```typescript Enrollment
+export interface EnrolledCourse {
+  cycle: string
+  course_id: string
+  course_name: string
+  course_type: string
+  credits: number
+  group: string
+  attempt: number
+  teacher: string | null
+}
+
+export interface Enrollment {
+  period: string
+  courses: EnrolledCourse[]
+  total_credits: number
+}
+```
+
+```typescript OptimizedSchedule
+export interface OptimizedSession {
+  course: string
+  tipo: string | null
+  day: string
+  start_time: string
+  end_time: string
+  room: string | null
+  subgroup: string | null
+  teacher: string | null
+  section: string | null
+}
+
+export interface OptimizedSelection {
+  course: string
+  cycle: string | null
+  section: string | null
+  subgroup: string | null
+}
+
+export interface OptimizedSchedule {
+  score: number
+  days: number
+  gap_minutes: number
+  extreme_sessions: number
+  selections: OptimizedSelection[]
+  sessions: OptimizedSession[]
+}
+```
+
+```typescript AcademicAnalytics
+export interface PeriodStat {
+  period: string
+  courses_taken: number
+  courses_passed: number
+  courses_failed: number
+  pass_rate: string
+  weighted_average: string
+}
+
+export interface AcademicAnalytics {
+  period_stats: PeriodStat[]
+  total_courses: number
+  total_passed: number
+  total_failed: number
+  overall_pass_rate: string
+  retried_course_names: string[]
+  best_period: string | null
+  worst_period: string | null
+}
+```
+
+</CodeGroup>
+
+## Python Dataclass Reference
+
+<CodeGroup>
+
+```python GradeReport (domain entity)
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import List, Optional
+
+@dataclass
+class Course:
+    course_id: str
+    course_name: str
+    attempt: int
+    u1: Optional[Decimal] = None
+    u2: Optional[Decimal] = None
+    u3: Optional[Decimal] = None
+    u4: Optional[Decimal] = None
+    u5: Optional[Decimal] = None
+    u6: Optional[Decimal] = None
+    sust: Optional[Decimal] = None
+    np: Optional[Decimal] = None
+    apla: Optional[Decimal] = None
+    final_grade: Optional[Decimal] = None
+    inh: bool = False
+
+@dataclass
+class GradeReport:
+    period: Optional[str] = None
+    payment_order: Optional[str] = None
+    enrollment_type: Optional[str] = None
+    courses: List[Course] = field(default_factory=list)
+```
+
+```python StudentProfile (domain entity)
+from dataclasses import dataclass
+from typing import Optional
+
+@dataclass
+class StudentProfile:
+    full_name: str
+    first_name: str
+    last_name: str
+    enrollment_number: str
+    faculty: str
+    school: str
+    campus: str
+    admission_year: Optional[int] = None
+    institutional_email: Optional[str] = None
+    personal_email: Optional[str] = None
+    phone: Optional[str] = None
+    document: Optional[str] = None
+    birth_date: Optional[str] = None
+    sex: Optional[str] = None
+    marital_status: Optional[str] = None
+    address: Optional[str] = None
+    curriculum: Optional[str] = None
+    condition: Optional[str] = None
+    photo_data_url: Optional[str] = None
+```
+
+```python AcademicRecord (domain entity)
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import List, Optional
+
+@dataclass
+class CourseHistory:
+    period: str
+    course_id: str
+    course_name: str
+    attempt: int
+    cycle: int
+    credits: int
+    course_type: str
+    section: Optional[str]
+    group: Optional[str]
+    final_grade: Optional[Decimal]
+    is_disabled: bool
+
+@dataclass
+class AcademicRecord:
+    student_name: str
+    enrollment_number: str
+    condition: str
+    accumulated_credits: int
+    weighted_average: Decimal
+    payment_status: Optional[str]
+    payment_order: Optional[str]
+    courses: List[CourseHistory] = field(default_factory=list)
+```
+
+```python DashboardReportDto (application layer)
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+@dataclass
+class DashboardReportDto:
+    grade_report: GradeReportDto
+    student_profile: Optional[StudentProfileDto] = None
+    academic_record: Optional[AcademicRecordDto] = None
+    attendance: List[AttendanceSummaryDto] = field(default_factory=list)
+    schedule: List[ScheduleSlotDto] = field(default_factory=list)
+    enrollment: Optional[EnrollmentDto] = None
+    optimized_schedules: List[OptimizedScheduleDto] = field(default_factory=list)
+    analytics: Optional[AcademicAnalyticsDto] = None
+```
+
+</CodeGroup>

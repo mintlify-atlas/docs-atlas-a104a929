@@ -1,0 +1,382 @@
+---
+title: "Backend Architecture: Clean and Hexagonal Layers"
+sidebarTitle: "Backend"
+description: "The backend applies Clean Architecture and Hexagonal Architecture. Dependencies flow inward: infrastructure adapters implement domain ports, use cases orchestrate domain services."
+---
+
+The backend is a **Python 3.12 / FastAPI** service that applies both Clean Architecture and Hexagonal Architecture. The golden rule is that dependencies always point toward the domain — the domain knows nothing about Playwright, Tesseract, or FastAPI. Infrastructure adapters implement abstract ports defined in the application layer, and use cases wire together domain services without ever importing an infrastructure class directly.
+
+## Layer Diagram
+
+```text
+Presentation (WebSocket)
+       ↓
+Application (Use Cases + Ports)
+       ↓
+Domain (Entities + Services)
+       ↑
+Infrastructure (Playwright + OCR + Catalog)
+```
+
+Each arrow shows the direction of the dependency. The infrastructure layer sits at the bottom and depends on the application ports it implements; the domain at the center is completely isolated from I/O.
+
+---
+
+## Domain Layer
+
+The domain layer contains **pure Python** — no async I/O, no external libraries beyond the standard library and `decimal`. It is the stable core of the application.
+
+### Entities
+
+| Entity | Description |
+|---|---|
+| `Course` | A single course row from the grades table, with unit grades (U1–U6), sustentación, NP, and inhibition flag |
+| `GradeReport` | Collection of `Course` objects for the current period, plus payment metadata |
+| `AcademicRecord` | Full historical course list grouped by period, with weighted average and credits |
+| `Attendance` | Per-course attendance summary: sessions attended, absent, justified, percentage, and at-risk flag |
+| `StudentProfile` | Personal data: full name, enrollment number, faculty, school, emails, photo as data URL |
+| `Enrollment` | Current period enrollment sheet (ficha de matrícula): enrolled courses with teacher and group |
+| `OptimizedSchedule` | A candidate conflict-free schedule from the optimizer, with a numeric score |
+| `ScheduleCatalog` | Loaded catalog of official course sections from the JSON file |
+| `BrowserSession` | Value object wrapping a Playwright `Browser`, `BrowserContext`, and `Page` |
+
+### Domain Services
+
+Domain services are **pure functions** — they accept entities and return derived values with no side effects.
+
+| Service | Responsibility |
+|---|---|
+| `grade_predictor` | Given the known unit grades, generates every combination of pending unit scores (0–20) whose weighted average is ≥ 14 (using `ROUND_HALF_UP`) |
+| `academic_analytics` | Groups the full `AcademicRecord` by period and computes pass rate, weighted average, and retried courses per period |
+| `grade_analytics` | Computes the partial average for a single course from its published unit grades |
+| `schedule_builder` | Deduplicates attendance session records by `(day, time, course)` to produce the weekly schedule grid |
+| `schedule_optimizer` | Combines sections from the catalog, searching for the conflict-free set with the highest score (fewer gaps, balanced days, fewer extreme-hour sessions) |
+
+<Info>
+  All grade values in the domain use `Decimal`, never `float`. Unpublished grades are `None` — never `0` or an empty string — so that callers can distinguish "not yet graded" from "zero".
+</Info>
+
+---
+
+## Application Layer
+
+The application layer defines **what** the system does, independent of **how** it is done.
+
+### Ports (Hexagonal Interfaces)
+
+Ports are abstract base classes (`ABC`) that express the contracts the application layer needs from the outside world.
+
+| Port | Implemented by |
+|---|---|
+| `SuvAuthenticationPort` | `SuvAuthenticator` |
+| `SuvGradeExtractionPort` | `SuvGradeExtractor` |
+| `SuvProfileExtractionPort` | `SuvProfileExtractor` |
+| `SuvRecordExtractionPort` | `SuvRecordExtractor` |
+| `SuvAttendanceExtractionPort` | `SuvAttendanceExtractor` |
+| `SuvEnrollmentExtractionPort` | `SuvEnrollmentExtractor` |
+| `SuvNavigationPort` | `SuvNavigator` |
+| `ScheduleCatalogPort` | `JsonCatalogAdapter` |
+| `CaptchaSolverPort` | `TesseractAdapter` |
+| `BrowserAutomationPort` | `PlaywrightAdapter` |
+
+### Use Cases
+
+#### `AuthenticateStudentUseCase`
+
+Orchestrates the full login flow, including CAPTCHA retries.
+
+```python
+MAX_CAPTCHA_ATTEMPTS = 3
+
+async def execute(
+    self,
+    username: str,
+    password: str,
+    session: BrowserSession,
+    emit: EventEmitter,
+) -> BrowserSession:
+    await emit("opening_suv", {})
+    await self._suv_auth.open_suv(session)
+    await emit("loading_login", {})
+
+    for attempt in range(1, MAX_CAPTCHA_ATTEMPTS + 1):
+        await emit("downloading_captcha", {"attempt": attempt})
+        captcha_bytes = await self._suv_auth.get_captcha_image(session)
+
+        await emit("solving_captcha", {"attempt": attempt})
+        try:
+            captcha_solution = await self._captcha_solver.solve(captcha_bytes)
+            await emit("submitting_login", {})
+            success = await self._suv_auth.submit_login(
+                session, username, password, captcha_solution
+            )
+        except CaptchaError:
+            success = False  # OCR failure counts as one attempt; reload and retry
+
+        if success:
+            await emit("selecting_student", {})
+            await self._suv_auth.select_student_profile(session)
+            await emit("authentication_success", {})
+            return session
+
+        if attempt < MAX_CAPTCHA_ATTEMPTS:
+            await self._suv_auth.reload_login_page(session)
+
+    raise AuthenticationError("Authentication failed after maximum captcha attempts")
+```
+
+#### `ExtractFullDashboardUseCase`
+
+Navigates all SUV modules sequentially in one browser session. Non-critical extractors (profile, record, enrollment, attendance) are wrapped in try/except — if they fail, the field is set to `None` and extraction continues. Grades are mandatory; a failure there propagates immediately.
+
+```python
+# Extraction order inside ExtractFullDashboardUseCase.execute()
+# 1. Profile        → emit("extracting_profile")    / non-fatal
+# 2. Academic Record → emit("extracting_record")    / non-fatal
+# 3. Enrollment     → emit("extracting_enrollment") / non-fatal
+# 4. Attendance     → emit("extracting_attendance") / non-fatal
+# 5. Grades         → emit("extracting_grades")     / FATAL if fails
+# 6. Schedule optimizer → emit("optimizing_schedule") / non-fatal
+```
+
+---
+
+## Infrastructure Layer
+
+Infrastructure adapters implement the application ports and contain all I/O.
+
+### Playwright Adapters
+
+#### `PlaywrightAdapter` — `BrowserAutomationPort`
+
+Creates and destroys Chromium browser sessions with anti-detection hardening:
+
+```python
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+context = await browser.new_context(
+    user_agent=_USER_AGENT,
+    viewport={"width": 1280, "height": 720},
+    ignore_https_errors=True,   # SUV uses a self-signed certificate
+)
+
+# Hide navigator.webdriver — one of the main bot-detection signals
+await context.add_init_script(
+    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+)
+```
+
+Session teardown always follows the strict order **Page → BrowserContext → Browser**, with each close isolated in its own try/except so a failure at one level cannot prevent the others from being released.
+
+#### `SuvAuthenticator` — `SuvAuthenticationPort`
+
+Navigates to `https://suv2.unitru.edu.pe/`, fills the login form, clicks the JS-driven login button (`#myButton`), and detects success by checking for `"SELECCIONAR PERFIL"` and `"Alumno"` in the page content.
+
+```python
+SUV_URL = "https://suv2.unitru.edu.pe/"
+USERNAME_SELECTOR = 'input[name="username"]'
+PASSWORD_SELECTOR = 'input[name="pass"]'
+CAPTCHA_INPUT_SELECTOR = 'input[name="captcha"]'
+CAPTCHA_IMAGE_SELECTOR = "#captcha-img"
+LOGIN_BUTTON_SELECTOR = "#myButton"  # type=button, JS-driven — not a real submit
+```
+
+#### `SessionManager`
+
+Maintains a dictionary of `BrowserSession` objects keyed by `session_id`. An `asyncio.Lock` serializes concurrent WebSocket connections modifying the session registry.
+
+```python
+async def create_session(self) -> BrowserSession: ...
+async def destroy_session(self, session_id: str) -> None: ...
+async def destroy_all(self) -> None: ...  # called on FastAPI lifespan shutdown
+```
+
+#### `sidebar_navigation.py` — shared navigation helpers
+
+The SUV sidebar starts closed (`body.ls-closed`). All extractors call the centralized helpers in `sidebar_navigation.py` rather than re-implementing the click sequence.
+
+```python
+async def ensure_sidebar_open(session: BrowserSession) -> None:
+    # Clicks the hamburger toggle (a.bars) only if body.ls-closed is present
+
+async def expand_submenu(session: BrowserSession, toggle_text: str) -> None:
+    # Expands a named a.menu-toggle and waits for its ul.ml-menu to appear
+
+async def click_menu_link(session: BrowserSession, link_selector: str) -> None:
+    # Scrolls the slimScroll sidebar and falls back to JS el.click() if needed
+
+async def dismiss_modal(session: BrowserSession) -> None:
+    # Dismisses the "Tener en Cuenta" informational modal when it appears
+```
+
+<Tip>
+  The sidebar's slimScroll container clips items below the fold, so standard `scroll_into_view_if_needed` and `click(force=True)` can both fail. `_click_resilient` tries three strategies in order: scroll + normal click, force click, and finally `el.click()` via JavaScript evaluation.
+</Tip>
+
+### OCR Adapter — `TesseractAdapter`
+
+The SUV CAPTCHA is an arithmetic expression image (e.g. `3 + 5 = ?`). `TesseractAdapter` implements `CaptchaSolverPort` with a robust voting pipeline:
+
+```python
+_TEXT_THRESHOLD = 60   # pixels below this value are text (black); above = noise (gray)
+_SCALES = (2, 3)       # scale factors applied before OCR
+_BORDER = 20           # white padding added around the scaled image
+_PSM_MODES = (7, 6)    # Tesseract page-segmentation modes: single line vs. block
+
+# Voting: run Tesseract for every combination of (scale × PSM mode)
+# The expression parsed by the majority wins.
+```
+
+Tesseract is invoked via `subprocess.run` with the image piped through **stdin** — not via pytesseract — because Leptonica on the deployment environment cannot open the temporary file that pytesseract creates:
+
+```python
+proc = subprocess.run(
+    [
+        "tesseract", "-", "stdout",
+        "--psm", str(psm),
+        "-c", f"tessedit_char_whitelist={_WHITELIST}",
+    ],
+    input=png,
+    capture_output=True,
+)
+```
+
+Preprocessing steps per scale:
+1. Convert to grayscale
+2. Threshold at `< 60` to remove the gray noise lines and keep only the black text
+3. Scale by the given factor using `LANCZOS` resampling
+4. Re-threshold at `< 128` to sharpen after scaling
+5. Add a white border of 20 px
+
+### Catalog Adapter — `JsonCatalogAdapter`
+
+Loads `data/horarios_catalogo.json` (generated from the official Google Sheets schedule) and provides the `ScheduleCatalogPort` interface consumed by the schedule optimizer use case.
+
+---
+
+## Presentation Layer
+
+The presentation layer is a single file: `websocket_handler.py`, which registers the `/ws` endpoint.
+
+### `WebSocketHandler`
+
+```python
+async def handle(self, websocket: WebSocket) -> None:
+    await websocket.accept()
+    emitter = EventEmitter(websocket)
+    session = await self._session_manager.create_session()
+
+    try:
+        data = await websocket.receive_json()
+        # ... authenticate then extract dashboard ...
+        await emitter.emit("dashboard_ready", self._serialize(dashboard))
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        await self._emit_error(emitter, exc)
+    finally:
+        await self._session_manager.destroy_session(session.session_id)
+```
+
+### `EventEmitter`
+
+A thin wrapper that sends `{event, data}` JSON over the WebSocket:
+
+```python
+class EventEmitter:
+    async def emit(self, event: str, data: dict) -> None:
+        await self._websocket.send_json({"event": event, "data": data})
+```
+
+### Domain Exception → User Message Mapping
+
+The handler maps each domain exception to a user-facing Spanish message:
+
+```python
+_ERROR_MESSAGES = {
+    CaptchaError:        "No se pudo resolver el captcha. Intenta nuevamente.",
+    AuthenticationError: "No se pudo iniciar sesión. Revisa tu usuario y contraseña.",
+    NavigationError:     "Hubo un problema navegando en el SUV. Intenta nuevamente.",
+    ExtractionError:     "No se pudieron extraer las notas. Intenta nuevamente.",
+    SuvTimeoutError:     "El SUV tardó demasiado en responder. Intenta más tarde.",
+    SuvUnavailableError: "El SUV no está disponible en este momento.",
+}
+```
+
+The full exception hierarchy in `domain/exceptions/suv_errors.py`:
+
+```python
+class SuvError(Exception): pass
+
+class CaptchaError(SuvError): pass
+class AuthenticationError(SuvError): pass
+class NavigationError(SuvError): pass
+class ExtractionError(SuvError): pass
+class SuvTimeoutError(SuvError): pass
+class SuvUnavailableError(SuvError): pass
+
+# ExtractionError subclasses — raised by specific extractors
+class GradesTableNotFoundError(ExtractionError): pass
+class AcademicInfoNotFoundError(ExtractionError): pass
+class InvalidCourseRowError(ExtractionError): pass
+class GradeMappingError(ExtractionError): pass
+```
+
+---
+
+## Dependency Injection
+
+Dependencies are wired manually in `main.py` — no DI framework is used. The wiring order follows the dependency graph:
+
+```python
+# 1. Infrastructure primitives
+playwright_adapter = PlaywrightAdapter()
+session_manager    = SessionManager(playwright_adapter)
+
+# 2. SUV adapters (implement application ports)
+suv_authenticator       = SuvAuthenticator()
+suv_navigator           = SuvNavigator()
+suv_grade_extractor     = SuvGradeExtractor()
+suv_profile_extractor   = SuvProfileExtractor()
+suv_record_extractor    = SuvRecordExtractor()
+suv_attendance_extractor = SuvAttendanceExtractor()
+suv_enrollment_extractor = SuvEnrollmentExtractor()
+tesseract_adapter       = TesseractAdapter()
+schedule_catalog_adapter = JsonCatalogAdapter(str(_catalog_path))
+
+# 3. Use cases (consume ports, not concrete adapters)
+authenticate_use_case = AuthenticateStudentUseCase(suv_authenticator, tesseract_adapter)
+dashboard_use_case    = ExtractFullDashboardUseCase(
+    profile_port    = suv_profile_extractor,
+    record_port     = suv_record_extractor,
+    attendance_port = suv_attendance_extractor,
+    enrollment_port = suv_enrollment_extractor,
+    grades_port     = suv_grade_extractor,
+    navigation_port = suv_navigator,
+    catalog_port    = schedule_catalog_adapter,
+)
+
+# 4. Presentation handler
+websocket_handler = WebSocketHandler(
+    session_manager,
+    authenticate_use_case,
+    dashboard_use_case,
+)
+```
+
+<Note>
+  The FastAPI lifespan hook calls `session_manager.destroy_all()` on shutdown, ensuring any orphaned Chromium processes are cleaned up if the server is stopped mid-session.
+</Note>
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated CORS origins (Railway injects the production frontend URL) |
+| `PORT` | `8000` | Server listen port (injected automatically by Railway) |

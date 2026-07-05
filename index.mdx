@@ -1,20 +1,68 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "Unitru Academic: Your UNT Academic Dashboard"
+sidebarTitle: "Home"
+description: "Unitru Academic automates access to the UNT SUV portal, extracts your academic data in one session, and presents it in a clean, fast dashboard."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+Unitru Academic is a personal dashboard for students of the **Universidad Nacional de Trujillo (UNT)**. It automates login to the Sistema Universitario Virtual (SUV) using a headless Chromium browser, solves the CAPTCHA with local OCR, and delivers your grades, attendance, schedule, and academic history — all in a single real-time session over WebSocket.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Run the full stack locally with Docker Compose in under five minutes.
+  </Card>
+  <Card title="Deploy to Railway" icon="train" href="/deployment">
+    Ship both services to Railway with public domains and TLS in minutes.
+  </Card>
+  <Card title="Features Overview" icon="star" href="/features/grades-predictor">
+    Grades, predictor, schedule optimizer, attendance, analytics, and more.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Integrate with the WebSocket API to build your own clients.
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## What Unitru Academic does
+
+After you enter your SUV credentials, Unitru Academic:
+
+<Steps>
+  <Step title="Authenticates against the SUV">
+    Opens the SUV login page in a headless Chromium browser, downloads the CAPTCHA image, solves it with Tesseract OCR, and submits your credentials. Up to three automatic retries on CAPTCHA failures.
+  </Step>
+  <Step title="Extracts all academic data in one session">
+    Navigates through every SUV section — profile, academic record, enrollment, attendance, and grades — without requiring you to click through each page manually.
+  </Step>
+  <Step title="Enriches and analyzes your data">
+    Runs the grade predictor (what scores do you need to pass?), builds your weekly schedule from attendance records, and computes period-by-period analytics on your full history.
+  </Step>
+  <Step title="Streams results to your browser">
+    Sends progress events over WebSocket as each section is extracted, then delivers the complete `dashboard_ready` payload — no page reload required.
+  </Step>
+</Steps>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Grade Predictor" icon="calculator" href="/features/grades-predictor">
+    Enumerate every passing note combination for courses with pending units.
+  </Card>
+  <Card title="Schedule & Optimizer" icon="calendar" href="/features/schedule">
+    View your weekly schedule and find the best conflict-free section set for next cycle.
+  </Card>
+  <Card title="Attendance Tracking" icon="clipboard-check" href="/features/attendance">
+    Per-course attendance percentage with at-risk alerts.
+  </Card>
+  <Card title="Academic Record" icon="book-open" href="/features/academic-record">
+    Full course history across all periods with credits and weighted averages.
+  </Card>
+  <Card title="Analytics" icon="chart-bar" href="/features/analytics">
+    Pass rates, course retries, best/worst periods, and overall statistics.
+  </Card>
+  <Card title="Student Profile" icon="user" href="/features/profile">
+    Personal and academic profile data including photo, extracted from the SUV.
+  </Card>
+</CardGroup>
+
+<Note>
+  Credentials are **never stored**. They exist only in memory during the active WebSocket session and are discarded the moment the connection closes.
+</Note>

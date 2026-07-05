@@ -1,0 +1,109 @@
+{
+  "projectType": "saas",
+  "projectName": "Unitru Academic",
+  "projectDescription": "A personal dashboard for Universidad Nacional de Trujillo (UNT) students that automates SUV portal access via headless browser scraping, extracts all academic data in a single session, and presents it through a clean Next.js interface.",
+  "theme": "luma",
+  "primaryColor": "#fbd304",
+  "lightColor": "#8c740c",
+  "darkColor": "#131213",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "deployment"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/grades-predictor",
+              "features/schedule",
+              "features/attendance",
+              "features/academic-record",
+              "features/analytics",
+              "features/profile"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/backend",
+              "architecture/frontend"
+            ]
+          },
+          {
+            "group": "Configuration & Operations",
+            "pages": [
+              "configuration",
+              "scripts",
+              "troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "WebSocket API",
+            "pages": [
+              "api/overview",
+              "api/websocket-events",
+              "api/data-models"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Automated SUV login with OCR-based CAPTCHA solving (up to 3 retries)",
+    "Real-time grade display per course with unit breakdown (U1–U6) and inhibition flag",
+    "Grade predictor that enumerates all valid note combinations to achieve ≥14 average",
+    "Weekly schedule grid derived from attendance records",
+    "Schedule optimizer finding conflict-free section combinations with best score",
+    "Attendance tracking with risk alerts per course",
+    "Full academic history across all periods with weighted averages",
+    "Period-by-period analytics with pass rates and course retry detection",
+    "Student profile extraction including photo",
+    "CSV export of current-cycle grades",
+    "No credential persistence — credentials exist only during the active WebSocket session",
+    "Docker Compose and Railway deployment ready"
+  ],
+  "publicApiSurface": [
+    "GET /health — service liveness check",
+    "WebSocket /ws — single endpoint for all client–server communication",
+    "WS incoming: { username: string, password: string }",
+    "WS event: opening_suv",
+    "WS event: loading_login",
+    "WS event: downloading_captcha",
+    "WS event: solving_captcha",
+    "WS event: submitting_login",
+    "WS event: selecting_student",
+    "WS event: authentication_success / authentication_failed",
+    "WS event: extracting_profile / profile_extraction_success / profile_extraction_failed",
+    "WS event: extracting_record / record_extraction_success / record_extraction_failed",
+    "WS event: extracting_enrollment / enrollment_extraction_success / enrollment_extraction_failed",
+    "WS event: extracting_attendance / attendance_extraction_success / attendance_extraction_failed",
+    "WS event: extracting_grades / grade_extraction_success / grade_extraction_failed",
+    "WS event: optimizing_schedule / schedule_optimized / schedule_optimization_failed",
+    "WS event: dashboard_ready — full DashboardReport payload",
+    "WS event: error — { message: string, category: string }",
+    "DashboardReport.grade_report — grades per course with unit scores and prediction",
+    "DashboardReport.student_profile — personal and academic profile data",
+    "DashboardReport.academic_record — full course history across all periods",
+    "DashboardReport.attendance — per-course attendance percentage and risk flag",
+    "DashboardReport.schedule — weekly schedule slots",
+    "DashboardReport.enrollment — current-period enrollment data",
+    "DashboardReport.optimized_schedules — top-5 conflict-free schedule combinations",
+    "DashboardReport.analytics — period-by-period academic statistics",
+    "connectAndFetch(username, password, callbacks) — frontend WebSocket client"
+  ]
+}

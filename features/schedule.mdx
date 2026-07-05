@@ -1,0 +1,137 @@
+---
+title: "Weekly Schedule & Schedule Optimizer"
+sidebarTitle: "Schedule"
+description: "View your auto-generated weekly schedule from attendance records and use the optimizer to find the best conflict-free section combination for your next enrollment."
+---
+
+Unitru Academic provides two complementary schedule features. The **Weekly Schedule** reconstructs your current timetable from real attendance data — no manual input needed — and displays it as a Monday-to-Friday grid with course name, group, teacher, and classroom for each block. The **Schedule Optimizer** operates independently: given a list of course names from the official catalog, it finds the top-5 conflict-free section combinations ranked by a scoring function that penalizes idle gaps, excess campus days, and extreme-hour sessions.
+
+---
+
+## Weekly Schedule
+
+### How It Is Built
+
+The weekly schedule is derived entirely from attendance session records extracted from the SUV. The builder lives in `backend/src/domain/services/schedule_builder.py` and follows this process:
+
+<Steps>
+  <Step title="Identify the student's real turn">
+    The SUV often embeds sessions from multiple groups inside the same attendance tracker. The builder detects the student's actual turn by looking for the `(day, start_time, end_time)` blocks where at least one session has a non-absent status (`P`, `PRESENTE`, `A`, `J`, `JUSTIFICADO`, `JU`). Blocks with no attendance history are discarded.
+  </Step>
+  <Step title="Deduplicate slots">
+    Sessions are collapsed by a `(day_name, start_time, end_time, course_name)` key. Only the first occurrence of each unique combination becomes a `ScheduleSlot` — cancelled sessions are always skipped.
+  </Step>
+  <Step title="Enrich from the enrollment record">
+    When enrollment data is available, each slot is cross-referenced against enrolled courses by normalized course name (uppercased, whitespace-collapsed). The enrollment record supplies `group` and `teacher` when they are present.
+  </Step>
+  <Step title="Sort chronologically">
+    Slots are sorted first by day of the week (Lunes → Domingo) and then by `start_time` string, producing the left-to-right, top-to-bottom display order in the grid.
+  </Step>
+</Steps>
+
+### ScheduleSlot Fields
+
+```python
+@dataclass
+class ScheduleSlot:
+    day: str               # "Lunes", "Martes", ..., "Domingo"
+    start_time: str        # e.g. "07:30"
+    end_time: str          # e.g. "09:30"
+    course_name: str
+    classroom: str | None  # room from the session record, may be None
+    teacher: str | None    # from enrollment cross-reference
+    group: str | None      # from enrollment cross-reference (e.g. "A")
+```
+
+### Grid Layout
+
+The frontend (`schedule_grid.tsx`) renders only the days that have at least one slot. Multiple courses that share the same time block (e.g., theory and practice) are stacked vertically inside the same cell rather than overwriting each other. Enrolled courses with no confirmed attendance yet are surfaced as a warning banner at the top of the grid so the student does not lose track of them.
+
+---
+
+## Schedule Optimizer
+
+The optimizer is implemented in `backend/src/domain/services/schedule_optimizer.py`. It is used to plan the **next** enrollment cycle by finding the best conflict-free combination of sections from the official course catalog.
+
+### Optimizer Weights
+
+Scoring uses a `OptimizerWeights` dataclass — **lower score = better schedule**:
+
+| Field | Default | Description |
+|---|---|---|
+| `gap_per_hour` | `1.0` | Penalty per hour of idle time between classes on the same day |
+| `per_day` | `3.0` | Penalty per campus day |
+| `per_extreme` | `2.0` | Penalty per session starting before 08:00 or ending after 19:00 |
+| `early_before_min` | `480` (08:00) | Sessions starting before this minute-of-day count as extreme |
+| `late_after_min` | `1140` (19:00) | Sessions ending after this minute-of-day count as extreme |
+
+```python
+@dataclass
+class OptimizerWeights:
+    gap_per_hour: float = 1.0
+    per_day: float = 3.0
+    per_extreme: float = 2.0
+    early_before_min: int = 8 * 60   # before 08:00
+    late_after_min: int = 19 * 60    # after 19:00
+```
+
+### OptimizedSchedule Fields
+
+Each candidate schedule returned by the optimizer exposes:
+
+| Field | Type | Description |
+|---|---|---|
+| `score` | `float` | Total penalty score (lower = better) |
+| `days` | `int` | Number of distinct campus days |
+| `gap_minutes` | `int` | Total idle minutes between classes across all days |
+| `extreme_sessions` | `int` | Number of sessions in extreme hours |
+| `selections` | `list[CourseSelection]` | One section/subgroup choice per course |
+| `sessions` | `list[CatalogSession]` | Flattened list of all individual sessions (property) |
+
+### How the Algorithm Works
+
+<Steps>
+  <Step title="Build candidate selections per course">
+    For each requested course name the optimizer queries the catalog using normalized matching (Unicode-stripped, lowercased, whitespace-normalized). Sections are grouped by `(cycle, section)`. Within a section, sessions without a `subgroup` (theory/practice shared by all) are always included; sessions with a `subgroup` (lab groups G1/G2/…) produce one `CourseSelection` candidate each.
+  </Step>
+  <Step title="Backtracking with conflict detection">
+    A recursive backtracking function walks through the course list. For each candidate selection it checks every session against all already-committed sessions for overlap: `a.day == b.day AND a.start_min < b.end_min AND b.start_min < a.end_min`. Any overlapping candidate is skipped entirely.
+  </Step>
+  <Step title="Score and sort">
+    Every complete combination of one selection per course is scored and appended to the results list. After all combinations are exhausted, the list is sorted ascending by `score`.
+  </Step>
+  <Step title="Deduplicate">
+    Different lab subgroups can produce schedules with identical visual blocks (same day/start/end/course tuples). A set-based deduplication pass removes these before truncating to `top_n` (default: **5**).
+  </Step>
+</Steps>
+
+### `optimize()` Signature
+
+```python
+from backend.src.domain.services.schedule_optimizer import optimize, OptimizerWeights
+
+schedules, missing = optimize(
+    course_names=["ALGEBRA LINEAL", "CALCULO II", "FISICA I"],
+    catalog=catalog,          # ScheduleCatalog loaded from horarios_catalogo.json
+    top_n=5,
+    weights=OptimizerWeights(),   # optional — defaults shown above
+)
+# schedules: List[OptimizedSchedule] sorted by score, at most top_n items
+# missing:   List[str] of course names not found in the catalog
+```
+
+### Missing Courses
+
+If a requested course name is not found in the catalog (after normalization), it is appended to the `missing` list and excluded from optimization. The remaining courses are still optimized normally.
+
+### UI Presentation
+
+The optimizer view (`optimizer_view.tsx`) renders each candidate schedule as an expandable panel labeled `Opción 1 · recomendada` (lowest score) through `Opción 5`. Each panel shows:
+
+- A chip row listing the selected section (and lab subgroup when applicable) for each course.
+- A summary line: number of campus days, total idle time, and extreme-session count.
+- A full schedule grid reusing the same `ScheduleGrid` component as the weekly schedule.
+
+<Tip>
+  The course catalog (`horarios_catalogo.json`) is baked into the backend Docker image at build time. If you need to update it for a new enrollment cycle, consult the catalog-generation scripts in the repository and rebuild the image.
+</Tip>

@@ -1,0 +1,127 @@
+---
+title: "Attendance Tracking with Risk Alerts"
+sidebarTitle: "Attendance"
+description: "View per-course attendance percentages, session counts, and EN RIESGO alerts for courses where your attendance is dangerously low."
+---
+
+Unitru Academic extracts the raw attendance records from the SUV for every course in the current cycle and computes clean per-course summaries automatically. Each summary shows total sessions, attended count, absent count, justified absences, and a percentage — all in one glanceable card — with a prominent **EN RIESGO** alert whenever your absence count approaches the SUV's 30% inhabilitación limit.
+
+---
+
+## AttendanceSummary Fields
+
+The `AttendanceSummary` dataclass (Python backend) and its TypeScript counterpart in `dashboard_types.ts` carry identical fields:
+
+```python
+@dataclass
+class AttendanceSummary:
+    course_id: str
+    course_name: str
+    teacher: str | None
+    total_sessions: int
+    attended: int
+    absent: int
+    justified: int
+    attendance_percentage: Decimal   # e.g. Decimal("75.00")
+    is_at_risk: bool
+    sessions: list[SessionRecord]    # raw session records (backend only)
+```
+
+```typescript
+export interface AttendanceSummary {
+  course_id: string
+  course_name: string
+  teacher: string | null
+  total_sessions: number
+  attended: number
+  absent: number
+  justified: number
+  attendance_percentage: string   // e.g. "75.00"
+  is_at_risk: boolean
+}
+```
+
+### Field Descriptions
+
+| Field | Description |
+|---|---|
+| `course_id` | SUV tracker ID for the course |
+| `course_name` | Course title as it appears in the SUV |
+| `teacher` | Teacher name when available (cross-referenced from the enrollment record) |
+| `total_sessions` | Count of non-cancelled sessions in the student's real turn |
+| `attended` | Sessions with status `P`, `PRESENTE`, or `A` |
+| `absent` | Sessions that are neither attended nor justified: `total_sessions − attended − justified` |
+| `justified` | Sessions with status `J`, `JUSTIFICADO`, or `JU` |
+| `attendance_percentage` | String representation of `(attended + justified) / total_sessions × 100`, rounded to 2 decimal places |
+| `is_at_risk` | `true` when the student is within 10% of the 30% absence limit (see below) |
+
+---
+
+## Attendance Percentage Calculation
+
+Justified absences count toward the attendance percentage alongside regular attendances. Cancelled sessions are excluded from the total entirely.
+
+```python
+if total > 0:
+    percentage = Decimal(str(round((attended + justified) / total * 100, 2)))
+else:
+    percentage = Decimal("100")
+```
+
+A course with zero active sessions (e.g., not yet started) is treated as 100% attended to avoid misleading zero-percent cards.
+
+---
+
+## EN RIESGO Alert
+
+The `is_at_risk` flag is raised when the number of **unjustified absences** is close enough to the inhabilitación threshold that only 10% of total sessions remain as buffer:
+
+```python
+risk_threshold = total * 0.30        # max absences allowed (30% rule)
+remaining = risk_threshold - absent  # absences still available
+is_at_risk = total > 0 and remaining <= (total * 0.10)
+```
+
+In plain terms: if fewer than 10% of your total sessions remain as "safe misses" before you hit the 30% limit, the alert fires.
+
+In the UI (`attendance_list.tsx`), an **EN RIESGO** badge styled in red appears on the card and the card itself switches to a red-tinted background:
+
+```tsx
+{summary.is_at_risk && (
+  <span className="rounded-full bg-[#BA1A1A] px-2 py-0.5 text-xs font-semibold text-white">
+    EN RIESGO
+  </span>
+)}
+```
+
+A progress bar beneath each card turns red when the attendance percentage drops below 70%, and yellow/black otherwise.
+
+---
+
+## Turn Detection
+
+The SUV often embeds sessions from multiple classroom groups inside the same attendance tracker. The builder automatically identifies your real turn — the `(day, start_time, end_time)` blocks where you have at least one non-absent status — and discards all other groups' blocks from the summary. If no block shows any attendance yet (first week of the cycle), all blocks are kept to avoid hiding a course entirely.
+
+---
+
+## Session Records
+
+Each `AttendanceSummary` on the backend carries the full list of raw `SessionRecord` objects:
+
+```python
+@dataclass
+class SessionRecord:
+    date: str               # "DD-MM-YYYY" (Peruvian SUV format)
+    day_name: str           # "Lunes", "Martes", etc.
+    start_time: str         # "07:30"
+    end_time: str           # "09:30"
+    classroom: str | None
+    is_cancelled: bool
+    attendance_status: str  # "P", "A", "J", "S/A", etc.
+```
+
+The `day_name` is derived from `date` using Python's `datetime.date.weekday()`, with support for both `DD-MM-YYYY` and `YYYY-MM-DD` formats to handle any SUV screen inconsistencies.
+
+<Note>
+  Attendance data is extracted live from the SUV at login time via the Playwright headless browser. The percentages and session counts you see reflect the exact state of the SUV at the moment of extraction — they are not cached between sessions.
+</Note>

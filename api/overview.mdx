@@ -1,0 +1,178 @@
+---
+title: "Unitru Academic API: WebSocket Interface Overview"
+sidebarTitle: "Overview"
+description: "Unitru Academic exposes two server endpoints: GET /health for liveness checks and WebSocket /ws for all data operations. Learn the connection lifecycle and error handling."
+---
+
+The Unitru Academic backend API surface is intentionally minimal. Rather than exposing a family of REST data endpoints, the server collapses every operation — authentication, SUV navigation, data extraction, and result delivery — into a **single WebSocket connection**. The only HTTP endpoint that exists is a health probe. This design keeps the protocol simple: open one connection, send one message, and receive a stream of progress events followed by a single richly-typed payload when extraction is complete.
+
+## Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Liveness check — returns `{"status": "ok"}` |
+| `WebSocket` | `/ws` | All operations: authentication, extraction, and results delivery |
+
+## Base URL
+
+The backend URL is configured at build time through the `NEXT_PUBLIC_BACKEND_WS_URL` environment variable. The frontend client reads this variable and falls back to the local default when it is absent.
+
+<Tabs>
+  <Tab title="Local Development">
+    ```
+    ws://localhost:8000
+    ```
+    The full WebSocket endpoint is `ws://localhost:8000/ws`.
+  </Tab>
+  <Tab title="Production (Railway)">
+    ```
+    wss://your-backend.up.railway.app
+    ```
+    The full WebSocket endpoint is `wss://your-backend.up.railway.app/ws`. Railway terminates TLS, so the backend itself listens on plain HTTP/WS internally.
+  </Tab>
+</Tabs>
+
+<Warning>
+  Always use `wss://` in production. Railway's TLS proxy wraps the connection, so any `ws://` URL sent from a browser on an HTTPS page will be blocked by the browser's mixed-content policy and the connection will silently fail.
+</Warning>
+
+## WebSocket Connection Lifecycle
+
+The protocol is strictly sequential. There are no multiplexed channels or request IDs — the server handles one extraction per WebSocket connection.
+
+<Steps>
+  <Step title="Open the connection">
+    The client opens a WebSocket to `ws[s]://host/ws`. The server accepts the handshake immediately and allocates a dedicated headless-browser session (Playwright) for this connection.
+  </Step>
+  <Step title="Send credentials">
+    The client sends **exactly one JSON message** with the student's SUV credentials:
+    ```json
+    { "username": "your-suv-username", "password": "your-suv-password" }
+    ```
+    If either field is missing, the server immediately emits an `error` event and no browser work begins.
+  </Step>
+  <Step title="Receive progress events">
+    The server navigates the SUV portal (opens the URL, loads the login page, downloads and solves the CAPTCHA via Tesseract OCR, submits credentials) and emits a series of progress events such as `opening_suv`, `solving_captcha`, and `authentication_success`. Each event has an empty `data` object unless specified otherwise.
+  </Step>
+  <Step title="Receive extraction events">
+    After a successful login, the server extracts each academic section in turn — profile, academic record, enrollment, attendance, grades, and optimized schedules — emitting a pair of `extracting_*` / `*_success` events for each section.
+  </Step>
+  <Step title="Receive dashboard_ready">
+    Once all sections have been processed, the server emits a single `dashboard_ready` event whose `data` field contains the complete `DashboardReport` payload. See [Data Models](/api/data-models) for the full schema.
+  </Step>
+  <Step title="Error handling">
+    If a non-recoverable error occurs at any point, the server emits an `error` event with `{"message": string, "category": string}` and the session is torn down. Individual extraction sections that fail emit a `*_failed` event but do **not** terminate the session — extraction continues with the next section.
+  </Step>
+  <Step title="Session cleanup">
+    When the WebSocket connection closes — whether normally or due to a disconnect — the server destroys the headless browser session and frees all associated resources. No session state persists between connections.
+  </Step>
+</Steps>
+
+## Message Format
+
+All messages travel as JSON text frames. Every message, in both directions, follows a consistent envelope:
+
+```json
+{ "event": "<event_name>", "data": { ... } }
+```
+
+<ResponseField name="event" type="string" required>
+  The event name. See [WebSocket Events](/api/websocket-events) for a complete list.
+</ResponseField>
+
+<ResponseField name="data" type="object" required>
+  Event-specific payload. For most progress events this is an empty object `{}`. For `dashboard_ready` it is the full `DashboardReport`. For `error` it contains `message` and `category` strings.
+</ResponseField>
+
+## Using the Frontend Client
+
+The frontend ships a ready-made `connectAndFetch` function in `frontend/infrastructure/websocket/websocket_client.ts` that wraps the raw WebSocket API and routes incoming events to typed callbacks.
+
+```typescript
+import type { WebSocketMessage } from "@/features/authentication/types/authentication_types"
+import type { DashboardReport } from "@/features/dashboard/types/dashboard_types"
+
+const BACKEND_WS_URL =
+  process.env.NEXT_PUBLIC_BACKEND_WS_URL ?? "ws://localhost:8000/ws"
+
+export interface WebSocketCallbacks {
+  onEvent: (event: string, data: Record<string, unknown>) => void
+  onDashboardReport: (report: DashboardReport) => void
+  onError: (message: string) => void
+  onClose: () => void
+}
+
+export function connectAndFetch(
+  username: string,
+  password: string,
+  callbacks: WebSocketCallbacks
+): () => void {
+  const ws = new WebSocket(BACKEND_WS_URL)
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ username, password }))
+  }
+
+  ws.onmessage = (event) => {
+    let message: WebSocketMessage
+    try {
+      message = JSON.parse(event.data)
+    } catch {
+      callbacks.onError("Respuesta inválida del servidor")
+      return
+    }
+
+    if (message.event === "dashboard_ready") {
+      callbacks.onDashboardReport(message.data as unknown as DashboardReport)
+    } else if (message.event === "error") {
+      const data = message.data as { message?: string }
+      callbacks.onError(data.message ?? "Error desconocido")
+    } else {
+      callbacks.onEvent(message.event, message.data)
+    }
+  }
+
+  ws.onerror = () => {
+    callbacks.onError("No se pudo conectar al servidor")
+  }
+
+  ws.onclose = () => {
+    callbacks.onClose()
+  }
+
+  return () => ws.close()
+}
+```
+
+The function returns a **cleanup callback** — call it to close the WebSocket when the component unmounts or the user navigates away.
+
+### Callback interface
+
+| Callback | When it fires | Argument |
+|---|---|---|
+| `onEvent` | Any event other than `dashboard_ready` or `error` | `(eventName, dataObject)` |
+| `onDashboardReport` | `dashboard_ready` received | Typed `DashboardReport` object |
+| `onError` | `error` event or WebSocket-level failure | Human-readable error string |
+| `onClose` | WebSocket connection closes | _(none)_ |
+
+## Health Check
+
+The `/health` endpoint is a simple liveness probe with no authentication requirement. Use it to verify the backend is reachable before opening a WebSocket connection.
+
+```bash
+curl https://your-backend.up.railway.app/health
+```
+
+Expected response:
+
+```json
+{ "status": "ok" }
+```
+
+## CORS
+
+Allowed origins are configured server-side via the `ALLOWED_ORIGINS` environment variable (comma-separated list). The default allows `http://localhost:3000`. In production, set `ALLOWED_ORIGINS` to your deployed frontend URL to prevent unauthorized cross-origin connections.
+
+<Note>
+  Credentials are sent only once over the WebSocket connection in the very first message and are never persisted, logged, or stored anywhere by the backend. The headless browser session is ephemeral and is destroyed as soon as the connection closes.
+</Note>

@@ -1,0 +1,114 @@
+---
+title: "Student Profile: Personal and Academic Data from the SUV"
+sidebarTitle: "Profile"
+description: "View your complete student profile extracted from the SUV, including personal data, faculty, career, admission year, contact information, and profile photo."
+---
+
+The Profile module displays every piece of personal and academic data that the SUV exposes on its *perfil* screen. Unitru Academic extracts this information in the same headless-browser session used for grades and attendance — no separate login or extra request is needed. The profile photo is downloaded from the SUV and embedded directly in the response as a base64 data URL, so the frontend renders it without making any external image request.
+
+---
+
+## StudentProfile Fields
+
+```python
+@dataclass
+class StudentProfile:
+    full_name: str
+    first_name: str
+    last_name: str
+    enrollment_number: str
+    faculty: str
+    school: str
+    campus: str
+    admission_year: int | None = None
+    institutional_email: str | None = None
+    personal_email: str | None = None
+    phone: str | None = None
+    document: str | None = None
+    birth_date: str | None = None
+    sex: str | None = None
+    marital_status: str | None = None
+    address: str | None = None
+    curriculum: str | None = None
+    condition: str | None = None
+    # Profile photo as a base64 data URL; rendered directly by the frontend.
+    photo_data_url: str | None = None
+```
+
+### Full Field Reference
+
+| Field | Type | Description |
+|---|---|---|
+| `full_name` | `string` | Complete name in the format `LAST_NAME FIRST_NAME` as stored in the SUV |
+| `first_name` | `string` | Given name(s) |
+| `last_name` | `string` | Family name(s) |
+| `enrollment_number` | `string` | University enrollment code (código de matrícula) |
+| `faculty` | `string` | Faculty the student belongs to (e.g., `"Facultad de Ingeniería"`) |
+| `school` | `string` | School or career within the faculty (e.g., `"Escuela de Informática"`) |
+| `campus` | `string` | Campus location (e.g., `"Trujillo"`) |
+| `admission_year` | `int \| null` | Year the student was admitted; `null` if not set in the SUV |
+| `institutional_email` | `string \| null` | University-issued email address |
+| `personal_email` | `string \| null` | Personal email registered in the SUV |
+| `phone` | `string \| null` | Mobile or contact phone number |
+| `document` | `string \| null` | National ID (DNI) number |
+| `birth_date` | `string \| null` | Date of birth as a string in the format returned by the SUV |
+| `sex` | `string \| null` | Sex as recorded by the SUV |
+| `marital_status` | `string \| null` | Marital status (e.g., `"Soltero/a"`) |
+| `address` | `string \| null` | Home address registered in the SUV |
+| `curriculum` | `string \| null` | Academic plan version (e.g., `"2018"`) — the curriculum the student is enrolled under |
+| `condition` | `string \| null` | Enrollment status (e.g., `"Regular"`, `"Irregular"`) |
+| `photo_data_url` | `string \| null` | Profile photo as a base64-encoded data URL (e.g., `"data:image/jpeg;base64,/9j/..."`) |
+
+---
+
+## Profile Photo
+
+The profile photo is fetched from the SUV during the scraping session and immediately converted to a base64 data URL. The frontend renders it with a plain `<img>` tag:
+
+```tsx
+{profile.photo_data_url ? (
+  <img
+    src={profile.photo_data_url}
+    alt={profile.full_name}
+    className="w-40 rounded-lg border border-[#E2E2E2] object-cover"
+  />
+) : (
+  <div className="flex h-48 w-40 items-center justify-center rounded-lg border border-dashed border-[#E2E2E2] text-xs text-[#5E5E5E]">
+    Sin foto
+  </div>
+)}
+```
+
+Because the image is embedded as a data URL, **no external image hosting is required** and the photo is never persisted anywhere outside the active browser session.
+
+---
+
+## UI Layout
+
+The `ProfileCard` component (`profile_card.tsx`) uses a two-column layout:
+
+<CardGroup cols={2}>
+  <Card title="Left column — Photo & Identity" icon="user">
+    The profile photo (or a dashed placeholder), the student's `full_name`, and a `condition` pill badge (e.g., **Regular** in UNT yellow).
+  </Card>
+  <Card title="Right column — Data grid" icon="table">
+    A responsive two-column definition list showing every non-null field: DNI, birth date, sex, marital status, address, phone, personal email, institutional email, faculty, school, curriculum, campus, admission year, and condition.
+  </Card>
+</CardGroup>
+
+Only fields with a non-null, non-empty value are rendered — missing SUV fields are silently omitted rather than shown as blank rows.
+
+---
+
+## Curriculum vs. Condition
+
+Two fields are often confused:
+
+- **`curriculum`** — the academic plan *version* under which the student is enrolled (e.g., `"2018"`). This determines which courses are required for graduation.
+- **`condition`** — the current enrollment *status* (e.g., `"Regular"` when all requirements are met, `"Irregular"` when the student has outstanding failed courses or credits).
+
+Both fields are extracted directly from the SUV and displayed as-is.
+
+<Note>
+  Several fields — including `admission_year`, `phone`, `personal_email`, `document`, `birth_date`, `sex`, `marital_status`, `address`, and `curriculum` — may be `null` if the student has not filled them in on the SUV's profile management page. Unitru Academic cannot display data that the SUV does not provide.
+</Note>

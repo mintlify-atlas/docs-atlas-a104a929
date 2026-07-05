@@ -1,0 +1,103 @@
+---
+title: "Academic Record: Full Course History Across All Periods"
+sidebarTitle: "Academic Record"
+description: "Browse your complete academic history across all enrollment periods, including final grades, credits, weighted averages, and course attempt counts."
+---
+
+The Academic Record module gives you a complete view of every course you have ever taken at UNT, organized period by period. Unitru Academic extracts this data from the SUV's *récord académico* section in the same headless-browser session as grades and attendance, then presents it as a collapsible period-by-period table with top-level summary statistics — weighted GPA, accumulated credits, and enrollment condition — always visible at a glance.
+
+---
+
+## Top-Level Record Fields
+
+```python
+@dataclass
+class AcademicRecord:
+    student_name: str
+    enrollment_number: str
+    condition: str
+    accumulated_credits: int
+    weighted_average: Decimal
+    payment_status: str | None
+    payment_order: str | None
+    courses: list[CourseHistory]
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `student_name` | `string` | Full name as it appears in the SUV |
+| `enrollment_number` | `string` | University enrollment code (código de matrícula) |
+| `condition` | `string` | Current enrollment status (e.g., `"Regular"`, `"Irregular"`) |
+| `accumulated_credits` | `int` | Total credits passed across all graded periods |
+| `weighted_average` | `Decimal` / `string` | Overall weighted GPA rounded to 2 decimal places |
+| `payment_status` | `string \| null` | Payment label returned by the SUV (e.g., `"PAGADA"`, `"PENDIENTE"`) |
+| `payment_order` | `string \| null` | Payment order number, when present |
+| `courses` | `CourseHistory[]` | Complete course list across all periods |
+
+---
+
+## CourseHistory Fields
+
+Each entry in `courses` represents one enrollment of one course in one academic period:
+
+```python
+@dataclass
+class CourseHistory:
+    period: str
+    course_id: str
+    course_name: str
+    attempt: int
+    cycle: int
+    credits: int
+    course_type: str
+    section: str | None
+    group: str | None
+    final_grade: Decimal | None
+    is_disabled: bool
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `period` | `string` | Academic period identifier (e.g., `"2024-I"`) |
+| `course_id` | `string` | SUV course code |
+| `course_name` | `string` | Full course title |
+| `attempt` | `int` | How many times this course has been enrolled across all periods (1 = first time, 2 = retake, …) |
+| `cycle` | `int` | Curriculum cycle the course belongs to (e.g., `3` for third cycle) |
+| `credits` | `int` | Credit value of the course |
+| `course_type` | `string` | Classification such as `"OB"` (obligatorio) or `"EL"` (electivo) |
+| `section` | `string \| null` | Section identifier (e.g., `"A"`) |
+| `group` | `string \| null` | Lab/practice group when applicable |
+| `final_grade` | `Decimal \| null` | Official final grade; `null` for the current in-progress period |
+| `is_disabled` | `boolean` | `true` when the entry has been administratively disabled in the SUV |
+
+---
+
+## Key Computed Concepts
+
+### Accumulated Credits
+
+`accumulated_credits` is the sum of credits for all courses with a `final_grade` of **14 or above** (passing grade at UNT) that are not disabled. It reflects the total academic progress toward degree completion.
+
+### Weighted Average
+
+`weighted_average` is the GPA computed by the SUV across all graded, non-disabled courses. It is extracted directly from the SUV record page — Unitru Academic does not recompute it.
+
+### Attempt Count
+
+`attempt` tracks how many times a given course has been enrolled across any period. A first enrollment is `attempt = 1`; a retake is `attempt = 2`, and so on. The `record_table.tsx` frontend displays this as **Vez 1**, **Vez 2**, etc. in the attempt column.
+
+### is_disabled Flag
+
+Some historical entries in the SUV are marked as disabled (withdrawn, administrative correction, etc.). These rows are shown with an **INH** badge in the UI and are **excluded** from analytics computations.
+
+---
+
+## UI Behavior
+
+The record is rendered as collapsible period sections (`record_table.tsx`). The most recent period starts expanded; all others are collapsed by default. Each period header shows the period label and the count of courses in that period.
+
+For the current in-progress period, `final_grade` is not yet published by the SUV. The table fills that column with the **partial average** calculated from unit scores (shown in italic with a `*` suffix) so the row is never left blank.
+
+<Note>
+  All data is extracted live from the SUV at login time. If a course entry does not appear in your record, verify it is visible on the SUV's own *récord académico* page — Unitru Academic cannot surface data that the SUV does not expose.
+</Note>

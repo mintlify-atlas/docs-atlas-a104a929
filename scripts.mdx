@@ -1,0 +1,203 @@
+---
+title: "Backend Utility Scripts for Catalog and Diagnostics"
+sidebarTitle: "Scripts"
+description: "Run diagnostic and data-management scripts to inspect SUV selectors, test end-to-end extraction, download schedule catalog data, and validate the schedule optimizer."
+---
+
+The `backend/scripts/` directory contains five utility scripts for development, debugging, and catalog management. They are development tools — none of them run as part of the production backend. All scripts that interact with the live SUV portal operate against the real university system, so **never hardcode credentials** in these files.
+
+<Warning>
+  Scripts that connect to the SUV (`inspect_suv_login.py`, `test_full_dashboard.py`) run against the real portal at `https://suv2.unitru.edu.pe/`. Pass credentials as command-line arguments only, and never commit them to version control.
+</Warning>
+
+---
+
+## inspect_suv_login.py
+
+Verifies the current CSS selectors and DOM structure of the SUV login form. Run this script whenever the SUV portal is updated and login stops working — it opens the login page in a headless Chromium browser and prints every `input`, `button`, `image`, and `form` element it finds, along with their `id`, `name`, `type`, `class`, and `src` attributes.
+
+The output lets you cross-check the selectors used in `SuvAuthenticator` against what the portal actually exposes, without needing a visible browser.
+
+**No arguments required.**
+
+```bash
+python3 scripts/inspect_suv_login.py
+```
+
+**Example output:**
+
+```
+URL final: https://suv2.unitru.edu.pe/
+
+=== FORMS ===
+{'id': 'form-login', 'name': None, 'action': '...', 'method': 'post'}
+
+=== INPUTS / SELECTS ===
+{'tag': 'input', 'type': 'text', 'name': 'txtCodigo', 'id': 'txtCodigo', ...}
+{'tag': 'input', 'type': 'password', 'name': 'txtClave', 'id': 'txtClave', ...}
+
+=== IMAGENES ===
+{'id': 'imgCaptcha', 'src': '/captcha.php', 'alt': None, 'className': None}
+```
+
+---
+
+## test_full_dashboard.py
+
+Runs a full end-to-end test against the live SUV: authenticates with the provided credentials (retrying CAPTCHA up to 5 times), then extracts all data modules — profile, academic record, enrollment, attendance, grades, schedule, and optimized schedule options — and prints the complete JSON-like result to stdout.
+
+Use this script to confirm that all extractors and navigators are working correctly after a SUV update, or to reproduce a bug reported by a user.
+
+**Arguments:** `<username> <password>`
+
+```bash
+python3 scripts/test_full_dashboard.py <usuario> <contraseña>
+```
+
+**Example output:**
+
+```
+[Auth intento global 1/5]
+  · captcha_attempt {'attempt': 1}
+  · authenticated
+
+✓ Autenticado. Extrayendo dashboard...
+
+===== RESULTADOS =====
+
+[PERFIL] OK
+  Juan Pérez García | Ingeniería Química | ingreso 2022
+
+[NOTAS] periodo=2024-I cursos=6
+  Balance de Materia y Energía: U1=14 U2=16 U3=None final=None promedio=None
+
+[MEJOR HORARIO] opciones=3
+  #1 score=87 días=5 libres=120min extremos=1 | Balance→III-A, ...
+```
+
+---
+
+## download_horarios.py
+
+Downloads the official schedule catalog from a Google Sheets spreadsheet and saves it locally. It fetches the workbook as XLSX (to preserve merged cells needed for block-duration parsing) and also downloads each sheet individually as CSV. The spreadsheet must be shared with "anyone with the link" access.
+
+**Arguments:** `<google_sheets_url>` (full URL or spreadsheet ID). Optionally, a second argument specifies the output directory (default: `data/horarios_csv/`).
+
+```bash
+python3 scripts/download_horarios.py <url>
+```
+
+**Example:**
+
+```bash
+python3 scripts/download_horarios.py \
+  "https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms/edit"
+```
+
+**Example output:**
+
+```
+Spreadsheet 1BxiMVs0XRA...: 12 hojas (+ horarios.xlsx)
+  ✓ 'Ciclo I - A' → Ciclo_I_-_A.csv (14328 bytes)
+  ✓ 'Ciclo I - B' → Ciclo_I_-_B.csv (13204 bytes)
+  ...
+Listo. CSVs en /app/data/horarios_csv
+```
+
+---
+
+## parse_horarios.py
+
+Converts the downloaded `horarios.xlsx` file into the structured `data/horarios_catalogo.json` catalog that the backend's `JsonCatalogAdapter` and `ScheduleOptimizer` consume. Each worksheet in the workbook represents one cycle + section (e.g. "Ciclo III - B"). The parser extracts metadata (cycle, group, section, semester), the course list (teacher, theory/practice/lab hours), and all timetable sessions (day, start time, end time, room, subgroup, session type).
+
+Block durations spanning multiple rows are recovered from the XLSX `mergeCells` ranges, since CSV exports lose that information.
+
+**No arguments required** (defaults to `data/horarios_csv/horarios.xlsx` → `data/horarios_catalogo.json`). Optional positional arguments override the input and output paths.
+
+```bash
+python3 scripts/parse_horarios.py
+```
+
+```bash
+# Explicit paths
+python3 scripts/parse_horarios.py data/horarios_csv/horarios.xlsx data/horarios_catalogo.json
+```
+
+**Example output:**
+
+```
+Catálogo escrito en data/horarios_catalogo.json (24 secciones)
+
+=== Ciclo III - B (grupo 3) | 6 cursos, 34 sesiones ===
+  Lunes     07:00-09:00 Balance de Materia y Energía   Teoría                aula=A-201 sub=None
+  Martes    08:00-10:00 Métodos Numéricos ...           Teoría y Práctica     aula=B-105 sub=None
+```
+
+---
+
+## test_optimizer.py
+
+Tests the schedule optimizer (`OptimizeScheduleUseCase`) using course names as input. It loads the local `data/horarios_catalogo.json`, searches for sections matching the given course names, generates all conflict-free combinations, and prints the top 3 ranked options with their score, number of days, free time between sessions, and extreme-hour sessions.
+
+If no arguments are provided, it runs against a built-in set of three default courses (Ciclo III sample) and then against a full six-course Ciclo III load.
+
+**Arguments:** course names as positional arguments (use quotes for names with spaces).
+
+```bash
+python3 scripts/test_optimizer.py "Cálculo I" "Física I"
+```
+
+```bash
+# No arguments — uses built-in default courses
+python3 scripts/test_optimizer.py
+```
+
+**Example output:**
+
+```
+========== CURSOS DADOS ==========
+
+  #1 puntaje=91 | 4 días | 1h00 libres | 0 extremos
+     secciones: Cálculo I→III-A, Física I→III-A
+       Lunes     07:00-09:00 Cálculo I              Teoría       (A)
+       Miércoles 08:00-10:00 Física I               Teoría       (A)
+```
+
+Any course name that does not match a section in the catalog appears in a `missing` list. Re-run `download_horarios.py` and `parse_horarios.py` to refresh the catalog if courses are missing.
+
+---
+
+## Catalog update workflow
+
+<Note>
+  The catalog is baked into the backend Docker image during `docker build`. Updating `data/horarios_catalogo.json` on disk only takes effect after the backend image is rebuilt and redeployed.
+</Note>
+
+<Steps>
+  <Step title="Download the new spreadsheet">
+    Run `download_horarios.py` with the Google Sheets URL provided by the university for the new semester. This saves `horarios.xlsx` and per-sheet CSVs to `data/horarios_csv/`.
+
+    ```bash
+    python3 scripts/download_horarios.py "https://docs.google.com/spreadsheets/d/<ID>/edit"
+    ```
+  </Step>
+  <Step title="Parse into JSON">
+    Run `parse_horarios.py` to convert the XLSX to `data/horarios_catalogo.json`. Verify the printed section count and spot-check a few sessions in the output.
+
+    ```bash
+    python3 scripts/parse_horarios.py
+    ```
+  </Step>
+  <Step title="Commit the updated catalog">
+    Add the regenerated JSON to version control and push.
+
+    ```bash
+    git add data/horarios_catalogo.json
+    git commit -m "chore: update schedule catalog for 2025-I"
+    git push
+    ```
+  </Step>
+  <Step title="Redeploy the backend">
+    Trigger a Railway redeploy (or push to the branch Railway watches). The new Docker build will `COPY` the updated JSON into the image, and the `JsonCatalogAdapter` will load it at startup.
+  </Step>
+</Steps>

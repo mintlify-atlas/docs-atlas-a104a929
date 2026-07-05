@@ -1,0 +1,174 @@
+---
+title: "Grades & Grade Predictor: Plan Your Passing Scores"
+sidebarTitle: "Grades & Predictor"
+description: "View current-cycle grades per course with unit breakdown (U1–U6) and use the grade predictor to see every score combination that results in a passing average."
+---
+
+The **Grades** section and the **Grade Predictor** work together as a single flow inside Unitru Academic. Grade cards display every course enrolled in the current cycle with its complete unit breakdown — U1 through U6, sustentación, nota de promoción, aplazado, and final grade — while the predictor goes one step further: for each course that is still in progress, it computes every valid integer-score combination across the pending units that would bring the rounded average to at least 14, so you always know exactly what you need before the next exam.
+
+## Grades Display
+
+Each course in the current cycle is rendered as a **CourseCard** with a status badge (`EN CURSO`, `COMPLETADO`, `INHIBIDO`, or `POR INICIAR`), individual unit chips colored by performance, and an expandable details drawer showing the full score breakdown.
+
+### TypeScript Interface
+
+The grade data is driven by these TypeScript interfaces, sourced directly from `frontend/features/grades/types/grade_types.ts`:
+
+```typescript
+export interface Course {
+  course_id: string
+  course_name: string
+  attempt: number
+  u1: string | null
+  u2: string | null
+  u3: string | null
+  u4: string | null
+  u5: string | null
+  u6: string | null
+  sust: string | null       // Sustentación
+  np: string | null         // Nota de Promoción
+  apla: string | null       // Aplazado
+  final_grade: string | null
+  inh: boolean              // Inhibición flag
+  // Partial average of published units while the cycle is in progress.
+  average: string | null
+  prediction: CoursePrediction | null
+}
+
+export interface GradeReport {
+  period: string | null
+  payment_order: string | null
+  enrollment_type: string | null
+  courses: Course[]
+}
+```
+
+### Field Reference
+
+<Accordion title="Course field descriptions">
+
+| Field | Type | Description |
+|---|---|---|
+| `course_id` | `string` | SUV course code (e.g. `"CS1001"`) |
+| `course_name` | `string` | Full course title as it appears in the SUV |
+| `attempt` | `number` | How many times this course has been enrolled (1 = first time) |
+| `u1`–`u6` | `string \| null` | Unit scores as decimal strings; `null` if not yet published |
+| `sust` | `string \| null` | Sustentación (final exam) score |
+| `np` | `string \| null` | Nota de Promoción |
+| `apla` | `string \| null` | Aplazado score |
+| `final_grade` | `string \| null` | Official final grade once the course is closed |
+| `inh` | `boolean` | `true` when the student has been inhibited from the course |
+| `average` | `string \| null` | Partial average of the units published so far (displayed as `12.50*`) |
+| `prediction` | `CoursePrediction \| null` | Grade predictor result; `null` when the course is already closed or inhibited |
+
+</Accordion>
+
+### Status Badges
+
+The frontend derives a visual status for every card based on the fields above:
+
+| Status | Condition | Color |
+|---|---|---|
+| `INHIBIDO` | `inh === true` | Red |
+| `COMPLETADO` | `final_grade` is set | Green |
+| `EN CURSO` | At least one unit (`u1`–`u6`) is non-null | Yellow |
+| `POR INICIAR` | All unit fields are `null` | Gray |
+
+A secondary badge (`Vez 2`, `Vez 3`, …) appears whenever `attempt > 1`.
+
+---
+
+## Grade Predictor
+
+The predictor is implemented in `backend/src/domain/services/grade_predictor.py` using Python's `Decimal` type for exact arithmetic. It runs on every in-progress course and attaches a `CoursePrediction` object to the course payload.
+
+### Algorithm
+
+<Steps>
+  <Step title="Filter eligible courses">
+    Courses with `final_grade` already set, or with `inh = true`, are skipped immediately — there is nothing left to predict.
+  </Step>
+  <Step title="Classify units as known or pending">
+    The predictor inspects only **u1, u2, and u3** (three graded units per course). Any unit whose value is not `None` is added to `known`; any unit that is still `None` is added to `pending`.
+  </Step>
+  <Step title="Determine the passing threshold">
+    A course passes when its rounded average is **≥ 14** (using `ROUND_HALF_UP` on `Decimal`). This is equivalent to a raw average **≥ 13.5**.
+
+    ```python
+    PASSING_GRADE = Decimal("14")
+
+    def _rounded_average(values: list[Decimal]) -> Decimal:
+        raw = sum(values) / Decimal(len(values))
+        return raw.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    ```
+  </Step>
+  <Step title="Check feasibility">
+    If filling all pending units with the maximum score of **20** still does not produce an average ≥ 14, `is_possible` is set to `False` and the predictor stops enumerating combinations.
+  </Step>
+  <Step title="Find the minimum score per pending unit">
+    Starting from 0 and iterating up to 20, the predictor finds the smallest integer `x` such that replacing every pending unit with `x` yields a rounded average ≥ 14. This value is stored as `min_per_pending`.
+
+    ```python
+    for x in range(21):
+        all_units = list(known.values()) + [Decimal(x)] * len(pending)
+        if _rounded_average(all_units) >= PASSING_GRADE:
+            min_per = Decimal(x)
+            break
+    ```
+  </Step>
+  <Step title="Enumerate all passing combinations">
+    Using `itertools.product(range(21), repeat=len(pending))`, every possible integer combination (0–20) across all pending units is tested. Any combination whose rounded average ≥ 14 is appended to `combinations`.
+  </Step>
+</Steps>
+
+### CoursePrediction Interface
+
+```typescript
+export interface CoursePrediction {
+  course_id: string
+  course_name: string
+  total_units: number
+  known: Record<string, string>     // e.g. { "u1": "12", "u2": "15" }
+  pending: string[]                 // e.g. ["u3"]
+  required_pending_sum: string      // minimum total needed across all pending units
+  min_per_pending: string           // smallest equal score across all pending units
+  is_possible: boolean              // false when max score cannot reach 14
+  already_passes: boolean           // true when all units are graded and average >= 14
+  combinations: Record<string, number>[]  // all valid integer combinations
+}
+```
+
+### Worked Example
+
+Suppose a course has **U1 = 12** and **U2 = 15** already published, and **U3** is still pending.
+
+- Known sum: `12 + 15 = 27`
+- Threshold sum for 3 units: `13.5 × 3 = 40.5`
+- Required additional score: `40.5 − 27 = 13.5`
+- `min_per_pending`: iterating from 0 → `_rounded_average([12, 15, 14])` = `round(41/3)` = `round(13.67)` = **14** ✓
+
+The predictor will report `min_per_pending = "14"` — meaning a score of at least **14 in U3** is needed. All integers from 14 to 20 will appear in `combinations`.
+
+<Note>
+  If the student already had U1 = 12 and U2 = 10, then `_rounded_average([12, 10, 20]) = round(42/3) = 14` — still possible. But U1 = 8, U2 = 8 would give `_rounded_average([8, 8, 20]) = round(36/3) = 12 < 14`, so `is_possible = False`.
+</Note>
+
+### UI Presentation
+
+The prediction is collapsed by default inside each `CourseCard`. Expanding it reveals:
+
+- The **minimum score** badge (e.g., `14 mín. en U3`) always visible in the header.
+- A section showing already-registered unit scores alongside pending slots (displayed as `?`).
+- A scrollable table listing all passing combinations.
+- A green banner (`✓ Ya aprueba con las notas actuales`) when `already_passes = true`.
+- A red banner (`✗ Ya no es posible aprobar este ciclo`) when `is_possible = false`.
+
+---
+
+## CSV Export
+
+Users can download the current cycle's grade data as a **CSV file** directly from the browser — no server round-trip required. The export button appears in the grades header and serializes every `Course` row (course ID, name, attempt, U1–U6, sust, NP, apla, final grade, inhibition, and average) into a comma-separated file.
+
+<Note>
+  All grade values are handled as `Decimal` (not `float`) on the backend to guarantee exact arithmetic. This means a score of `13.50` rounds to `14` (passes), not to `13` — matching the SUV's own rounding rules. Unpublished unit scores are always `None`/`null` in the payload — they are **never** substituted with `0`.
+</Note>

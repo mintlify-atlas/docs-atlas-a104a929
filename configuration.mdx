@@ -1,0 +1,93 @@
+---
+title: "Configure Unitru Academic: Environment Variables and Settings"
+sidebarTitle: "Configuration"
+description: "Reference for all environment variables used by the backend and frontend services, including CORS origins, WebSocket URL, and port configuration."
+---
+
+Both the backend and frontend services are configured entirely through environment variables. No source files or config files need to be edited manually — set the variables in your shell, Docker Compose file, or Railway dashboard before starting the services.
+
+## Backend environment variables
+
+The backend is a FastAPI application served by Uvicorn. It reads its configuration at startup from the process environment.
+
+| Variable | Default | Description | Required |
+|---|---|---|---|
+| `ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated list of CORS-allowed origins. In production, set this to the Railway-generated frontend domain (e.g. `https://unitru-academic.up.railway.app`). Required for cross-origin WebSocket connections to succeed. | Yes |
+| `PORT` | `8000` | Server listen port. The backend CMD expands `${PORT:-8000}`, so it works with or without the variable. | No |
+
+<Note>
+  Railway injects `PORT` automatically into every service at runtime. Do not set it manually in the Railway dashboard — the backend's `Dockerfile` CMD already handles it with `${PORT:-8000}`.
+</Note>
+
+## Frontend environment variables
+
+The frontend is a Next.js application compiled to a standalone Node.js server. Because it uses a `NEXT_PUBLIC_*` variable, the value is embedded into the JavaScript bundle at **build time**, not at runtime.
+
+| Variable | Default | Description | Required |
+|---|---|---|---|
+| `NEXT_PUBLIC_BACKEND_WS_URL` | `ws://localhost:8000/ws` | WebSocket URL the student's browser connects to. In production this must use the `wss://` scheme with the Railway backend domain: `wss://unitru-backend.up.railway.app/ws`. | Yes (production) |
+
+<Warning>
+  `NEXT_PUBLIC_BACKEND_WS_URL` is a **build-time variable**. It must be present as a Docker `ARG` before `npm run build` runs. Changing it in the Railway dashboard after the image has already been built has no effect until you trigger a full redeploy so the image is rebuilt with the new value.
+</Warning>
+
+## Docker Compose configuration
+
+For local development, both variables are set directly in `docker-compose.yml`. The frontend receives `NEXT_PUBLIC_BACKEND_WS_URL` as a Docker build argument (`args:`), not as a runtime `environment:` entry, because Next.js embeds it at build time.
+
+```yaml docker-compose.yml
+services:
+  backend:
+    build: ./backend
+    image: unitru-academic-backend
+    ports:
+      - "8000:8000"
+    environment:
+      # Comma-separated CORS-allowed origins — see src/main.py
+      ALLOWED_ORIGINS: "http://localhost:3000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Embedded in build; the student's browser connects to this URL.
+        NEXT_PUBLIC_BACKEND_WS_URL: "ws://localhost:8000/ws"
+    image: unitru-academic-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+```
+
+## Railway cross-service references
+
+Railway can resolve references between services in the same project using the `${{service.VARIABLE}}` syntax. This means you never have to paste a domain manually — Railway fills it in when the referenced service generates its public domain.
+
+**Backend service** — Variables tab:
+
+```bash
+ALLOWED_ORIGINS = https://${{frontend.RAILWAY_PUBLIC_DOMAIN}}
+```
+
+**Frontend service** — Variables tab (used as a build arg):
+
+```bash
+NEXT_PUBLIC_BACKEND_WS_URL = wss://${{backend.RAILWAY_PUBLIC_DOMAIN}}/ws
+```
+
+Note the `wss://` scheme (TLS) and the `/ws` path suffix. Railway terminates TLS at its proxy layer and forwards traffic to the backend Uvicorn process, which must be started with `--proxy-headers --forwarded-allow-ips="*"` — the backend `Dockerfile` already does this.
+
+## Schedule catalog
+
+The schedule catalog (`data/horarios_catalogo.json`) is a JSON file that maps course names to their official section timetables for the current semester. It is **baked into the backend Docker image** at build time via the `COPY . .` instruction in the backend `Dockerfile` — it is not fetched at runtime.
+
+To update the catalog when the university publishes a new semester schedule:
+
+1. Re-run `scripts/download_horarios.py` with the new Google Sheets URL.
+2. Re-run `scripts/parse_horarios.py` to regenerate `data/horarios_catalogo.json`.
+3. Commit the updated JSON file to the repository.
+4. Redeploy the backend service so Docker rebuilds the image with the new catalog baked in.
+
+See the [Scripts](/scripts) page for detailed usage of each catalog script.

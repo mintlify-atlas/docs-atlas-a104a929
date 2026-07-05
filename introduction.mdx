@@ -1,0 +1,109 @@
+---
+title: "Unitru Academic: SUV Dashboard for UNT Students"
+sidebarTitle: "Introduction"
+description: "Unitru Academic automates SUV portal login, extracts grades, attendance, schedule, and academic history, and displays them in a modern dashboard. Learn about its architecture and features."
+---
+
+Unitru Academic is a personal dashboard built for students of the **Universidad Nacional de Trujillo (UNT)** who rely on the SUV (Sistema Universitario Virtual) to access their academic records. It automates the entire login flow — including CAPTCHA resolution via local OCR — opens a Chromium headless browser session behind the scenes, extracts every piece of academic data in one pass, and presents it through a clean, fast Next.js interface. Students see their grades, attendance, schedule, and full academic history without ever waiting for the sluggish SUV portal to respond.
+
+## The Problem
+
+The SUV portal is notoriously slow to navigate: each section requires a separate page load, the CAPTCHA adds friction on every visit, and there is no way to see all your information at a glance. Unitru Academic solves this by fully automating the portal interaction server-side, emitting real-time progress events over a WebSocket, and delivering a structured JSON payload to the frontend in a single session.
+
+<Note>
+  Unitru Academic is a personal tool and study aid. It never stores your university credentials — they exist only in memory for the duration of the active WebSocket session and are discarded the moment the connection closes.
+</Note>
+
+## Technology Stack
+
+| Layer | Technology |
+|---|---|
+| **Frontend** | Next.js 16 · React 19 · TypeScript 5 · Tailwind CSS 4 |
+| **Charts** | Recharts 3 |
+| **Backend** | Python 3.12 · FastAPI · Uvicorn (ASGI) |
+| **Scraping** | Playwright — Chromium headless |
+| **OCR** | Tesseract CLI (invoked via `subprocess` / stdin) |
+| **Image processing** | Pillow |
+| **Containers** | Docker · Docker Compose |
+| **Deployment** | Railway (two independent services) |
+
+## Architecture
+
+Unitru Academic is a **monorepo** containing two distinct services that communicate exclusively over WebSocket — there is no REST API and no shared database.
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                        Browser                           │
+│  Next.js 16 (frontend)  ←── WebSocket ──→  FastAPI      │
+│                                             (backend)    │
+│                                                │         │
+│                                           Playwright     │
+│                                           (Chromium)     │
+│                                                │         │
+│                                           SUV UNITRU     │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Backend — Clean + Hexagonal Architecture
+
+The backend is structured in four concentric layers where dependencies point exclusively inward toward the domain:
+
+```
+Presentation  (WebSocket handler — /ws)
+      ↓
+Application   (Use Cases + Hexagonal Ports)
+      ↓
+Domain        (Entities + Pure Domain Services)
+      ↑
+Infrastructure (Playwright · Tesseract OCR · JSON Catalog)
+```
+
+- **Domain** holds pure Python entities (`Course`, `GradeReport`, `Attendance`, `AcademicRecord`, `StudentProfile`, …) and stateless domain services such as the grade predictor and schedule optimizer.
+- **Application** defines hexagonal ports (interfaces) and use cases (`AuthenticateStudentUseCase`, `ExtractFullDashboardUseCase`) that orchestrate the scraping session without knowing how Playwright works.
+- **Infrastructure** provides the Playwright adapters that navigate the SUV, the Tesseract OCR adapter that resolves the CAPTCHA, and the JSON catalog adapter for the schedule optimizer.
+- **Presentation** is a single WebSocket endpoint (`/ws`) that wires everything together and streams progress events to the client.
+
+### Frontend — Feature-Based Architecture
+
+The frontend is organized around features rather than technical layers — each feature (grades, attendance, schedule, record, analytics, profile) lives in its own directory and owns its components, hooks, and types. A shared `lib/websocket.ts` module manages the WebSocket lifecycle.
+
+## Features
+
+| Module | Description |
+|---|---|
+| 🔐 **Authentication** | Automatic login with local CAPTCHA resolution (Tesseract OCR). Up to 3 retries per session. |
+| 📝 **Grades** | Cards per course showing units U1–U6, partial average, final exam grade, and inhibition flag. |
+| 🔮 **Grade Predictor** | Given already-graded units, generates all combinations of pending grades that yield a passing average ≥ 14. |
+| 🗓️ **Weekly Schedule** | Monday–Friday grid derived from attendance records, including instructor, group, and classroom. |
+| 🧩 **Best Schedule** | Optimizer that finds the conflict-free section combination with the highest score (gaps, day spread, early/late balance). |
+| ✅ **Attendance** | Per-course attendance percentage with progress bar and **"AT RISK"** alert. |
+| 📚 **Academic Record** | Complete history by academic period: final grades, credits, weighted GPA. |
+| 📊 **Analytics** | Charts and table showing period-by-period performance: approval rate, averages, repeated courses. |
+| 👤 **Profile** | Full personal data extracted from the SUV, including your profile photo. |
+| 📤 **Export CSV** | Download current-semester grades directly in the browser. |
+
+## Security
+
+Unitru Academic is designed with a clear security principle: **credentials are never persisted anywhere.** The username and password are transmitted over the WebSocket connection, held in memory only while the Playwright browser session is active, and discarded as soon as the connection closes. The backend never writes credentials to disk, logs, or any external service.
+
+Additional implementation details:
+- The Chromium browser context spoofs a real Chrome User-Agent and hides `navigator.webdriver` to avoid bot-detection blocks.
+- The SUV uses a self-signed SSL certificate; the Playwright context accepts it explicitly with `ignore_https_errors=True`.
+- All grade values are represented with Python `Decimal` (never `float`) to avoid rounding errors. Unpublished grades are `None`, never `0` or `""`.
+
+## Explore the Docs
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run the full stack locally with Docker Compose in under five minutes.
+  </Card>
+  <Card title="Deployment" icon="train" href="/deployment">
+    Deploy backend and frontend as two independent Railway services from the same monorepo.
+  </Card>
+  <Card title="Grade Predictor" icon="calculator" href="/features/grades-predictor">
+    Learn how the predictor generates every combination of pending grades needed to pass.
+  </Card>
+  <Card title="API Overview" icon="plug" href="/api/overview">
+    Explore the single WebSocket endpoint and the full event schema.
+  </Card>
+</CardGroup>

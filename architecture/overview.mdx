@@ -1,0 +1,111 @@
+---
+title: "Unitru Academic System Architecture Overview"
+sidebarTitle: "Overview"
+description: "Understand how the frontend and backend communicate over WebSocket, how data flows through Clean Architecture layers, and how credentials are kept secure."
+---
+
+Unitru Academic is organized as a monorepo containing two completely independent services — a **Next.js 16 frontend** and a **Python 3.12 / FastAPI backend** — that communicate exclusively over a single persistent WebSocket connection. There are no REST endpoints exposed for data retrieval; the only HTTP route in the backend is `/health`, used for infrastructure health checks. Every piece of academic data travels over the WebSocket in real time, from the first progress event to the final `dashboard_ready` payload.
+
+## System Diagram
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│                      Navegador                          │
+│  Next.js 16 (frontend)   ←── WebSocket ──→  FastAPI    │
+│                                              (backend)  │
+│                                               │         │
+│                                          Playwright     │
+│                                          (Chromium)     │
+│                                               │         │
+│                                          SUV UNITRU     │
+└─────────────────────────────────────────────────────────┘
+```
+
+The browser runs the Next.js application, which opens a WebSocket to the FastAPI backend. The backend drives a headless Chromium instance via Playwright to log in to the SUV portal, scrape all academic data, and stream it back to the frontend. The frontend never touches the SUV directly.
+
+## Communication Contract
+
+The entire data exchange is event-driven over a single `/ws` WebSocket connection:
+
+<Steps>
+  <Step title="Connect and send credentials">
+    The frontend opens a WebSocket to `/ws` and immediately sends a JSON message with the student's username and password.
+
+    ```json
+    { "username": "u21234567", "password": "••••••••" }
+    ```
+  </Step>
+  <Step title="Receive progress events">
+    While the backend navigates the SUV, it emits a stream of progress events. Each message follows the envelope:
+
+    ```json
+    { "event": "solving_captcha", "data": { "attempt": 1 } }
+    ```
+
+    The frontend displays these in the `AuthenticationProgress` component as labelled steps.
+  </Step>
+  <Step title="Receive the dashboard payload">
+    Once all data has been extracted, the backend sends a single terminal event:
+
+    ```json
+    { "event": "dashboard_ready", "data": { /* full DashboardReport */ } }
+    ```
+
+    The frontend transitions directly to the dashboard view — no additional requests are needed.
+  </Step>
+  <Step title="Connection closes">
+    The WebSocket closes after `dashboard_ready` is sent. The backend destroys the browser session immediately in its `finally` block.
+  </Step>
+</Steps>
+
+<Note>
+  All backend errors (authentication failure, navigation error, extraction error, SUV timeout) are also delivered over the WebSocket as `{ "event": "error", "data": { "message": "...", "category": "..." } }`, never as HTTP error codes.
+</Note>
+
+## Security Model
+
+Credential security is achieved through architecture, not encryption at rest — because credentials are never stored at rest.
+
+<CardGroup cols={2}>
+  <Card title="Credentials live in memory only" icon="lock">
+    The `username` and `password` fields exist only inside the active WebSocket handler coroutine. They are passed directly to the `AuthenticateStudentUseCase`, typed into the Playwright page, and then go out of scope. No database write, no log line, no session store.
+  </Card>
+  <Card title="Browser session destroyed on close" icon="trash">
+    `SessionManager` ties each `BrowserSession` to a WebSocket connection. When the socket closes — whether normally or due to an error — the `finally` block calls `destroy_session`, which closes the Playwright resources in strict order: **Page → BrowserContext → Browser**.
+  </Card>
+  <Card title="No persistence beyond the session" icon="database">
+    There is no database, no Redis session store, and no cookie jar persisted between requests. Each new login creates a fresh Chromium context with no prior state.
+  </Card>
+  <Card title="Anti-detection hardening" icon="shield">
+    The Playwright context is created with a real Chrome User-Agent and `navigator.webdriver` hidden via an init script, so the SUV portal cannot distinguish the automated browser from a real one.
+  </Card>
+</CardGroup>
+
+<Warning>
+  The SUV portal at `suv2.unitru.edu.pe` uses a self-signed SSL certificate. The Playwright browser context is created with `ignore_https_errors=True` to allow navigation — identical to a user clicking "Proceed anyway" in a real browser.
+</Warning>
+
+## Service Separation
+
+The two services have a strict division of responsibility:
+
+| Service | Responsibility |
+|---|---|
+| **Backend (FastAPI)** | All scraping logic, CAPTCHA solving, data extraction, domain modeling, analytics computation, schedule optimization |
+| **Frontend (Next.js)** | Purely presentational — renders the data received from the backend, manages UI state transitions, displays real-time progress |
+
+The frontend has zero knowledge of the SUV portal structure, selector names, or extraction logic. If the SUV portal changes, only the backend adapters need to be updated.
+
+## Architecture Styles
+
+- **Backend** applies **Clean Architecture + Hexagonal Architecture**: infrastructure adapters implement domain ports, and use cases orchestrate domain services. Dependencies always point inward toward the domain.
+- **Frontend** applies **Feature-Based Architecture**: one folder per product feature, each owning its own components and types, with a single shared `infrastructure/websocket/` integration point.
+
+<CardGroup cols={2}>
+  <Card title="Backend Architecture" icon="server" href="/architecture/backend">
+    Deep dive into the Python Clean + Hexagonal layers, use cases, ports, Playwright adapters, OCR pipeline, and dependency wiring.
+  </Card>
+  <Card title="Frontend Architecture" icon="monitor" href="/architecture/frontend">
+    Feature directory structure, WebSocket client integration, authentication flow, key types, and component organization.
+  </Card>
+</CardGroup>

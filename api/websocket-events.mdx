@@ -1,0 +1,228 @@
+---
+title: "WebSocket Events Reference for Unitru Academic"
+sidebarTitle: "WS Events"
+description: "Complete reference for all WebSocket events emitted by the Unitru Academic backend, including authentication progress, extraction status, and the final dashboard_ready payload trigger."
+---
+
+The Unitru Academic backend emits a deterministic sequence of events over the WebSocket as it navigates the SUV portal on behalf of the student. Clients can listen to these events to display real-time progress feedback — such as a loading screen with step-by-step status — before the full payload arrives in `dashboard_ready`. Events are emitted synchronously in the order the backend executes each operation, so the sequence is predictable and can be used to drive animated UI states.
+
+## Incoming Message (Client → Server)
+
+The client sends exactly **one message** after the connection opens. No further messages are expected or processed.
+
+```json
+{ "username": "your-suv-username", "password": "your-suv-password" }
+```
+
+<ParamField body="username" type="string" required>
+  The student's SUV portal username, typically their university registration code (código de matrícula).
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  The student's SUV portal password. Sent over the WebSocket only once and never stored by the backend.
+</ParamField>
+
+## Outgoing Message Format (Server → Client)
+
+Every message emitted by the server follows the same envelope shape:
+
+```json
+{ "event": "<event_name>", "data": { ... } }
+```
+
+For the vast majority of progress events, `data` is an empty object `{}`. Only terminal events (`dashboard_ready`, `error`) carry meaningful payloads in `data`.
+
+---
+
+## Authentication Events
+
+These events are emitted while the backend opens the SUV portal, renders the login page, solves the CAPTCHA, and submits the credentials form.
+
+| Event | Description | `data` shape |
+|---|---|---|
+| `opening_suv` | Opening the SUV portal URL in the headless browser. | `{}` |
+| `loading_login` | Login page is loading and DOM is stabilising. | `{}` |
+| `downloading_captcha` | Fetching the CAPTCHA image from the SUV server. | `{}` |
+| `solving_captcha` | Running Tesseract OCR to decode the CAPTCHA text. | `{}` |
+| `submitting_login` | Filling and submitting the credentials form. | `{}` |
+| `selecting_student` | Clicking the "Alumno" profile option on the role-selection screen. | `{}` |
+| `authentication_success` | Login succeeded and the student session is now active. | `{}` |
+| `authentication_failed` | Login failed after the maximum number of retries (3). The session will terminate. | `{}` |
+
+---
+
+## Extraction Events
+
+After a successful login the backend navigates each academic section of the SUV and extracts data. Each section emits an `extracting_*` event when it starts and either a `*_success` or `*_failed` event when it finishes.
+
+<Note>
+  `*_failed` events are **non-fatal for the overall extraction**. If, for example, the academic record section fails (perhaps because the SUV page is temporarily unavailable), the backend logs the failure, emits `record_extraction_failed`, and continues to the next section. Only the `error` event terminates the WebSocket session entirely.
+</Note>
+
+### Profile
+
+| Event | Description | `data` shape |
+|---|---|---|
+| `extracting_profile` | Starting profile extraction from the student info page. | `{}` |
+| `profile_extraction_success` | Profile data extracted successfully. | `{}` |
+| `profile_extraction_failed` | Profile extraction failed; `student_profile` will be `null` in the report. | `{}` |
+
+### Academic Record
+
+| Event | Description | `data` shape |
+|---|---|---|
+| `extracting_record` | Starting full academic record extraction. | `{}` |
+| `record_extraction_success` | Academic record extracted successfully. | `{}` |
+| `record_extraction_failed` | Record extraction failed; `academic_record` will be `null` in the report. | `{}` |
+
+### Enrollment
+
+| Event | Description | `data` shape |
+|---|---|---|
+| `extracting_enrollment` | Starting current-period enrollment extraction. | `{}` |
+| `enrollment_extraction_success` | Enrollment data extracted successfully. | `{}` |
+| `enrollment_extraction_failed` | Enrollment extraction failed; `enrollment` will be `null` in the report. | `{}` |
+
+### Attendance
+
+| Event | Description | `data` shape |
+|---|---|---|
+| `extracting_attendance` | Starting attendance extraction across all enrolled courses. | `{}` |
+| `attendance_extraction_success` | Attendance data extracted successfully. | `{}` |
+| `attendance_extraction_failed` | Attendance extraction failed; `attendance` will be an empty array in the report. | `{}` |
+
+### Grades
+
+| Event | Description | `data` shape |
+|---|---|---|
+| `extracting_grades` | Starting grade extraction sequence. | `{}` |
+| `extracting_academic_info` | Fetching the academic information section of the grade page. | `{}` |
+| `extracting_courses` | Iterating through the individual course grade rows. | `{}` |
+| `grade_extraction_success` | All grade data extracted successfully. | `{}` |
+| `grade_extraction_failed` | Grade extraction failed; `grade_report.courses` will be empty. | `{}` |
+
+### Schedule Optimisation
+
+| Event | Description | `data` shape |
+|---|---|---|
+| `optimizing_schedule` | Running the schedule optimisation algorithm against the official catalog. | `{}` |
+| `schedule_optimized` | Optimisation complete; top-5 conflict-free schedules computed. | `{}` |
+| `schedule_optimization_failed` | Optimisation failed; `optimized_schedules` will be an empty array. | `{}` |
+
+---
+
+## Terminal Events
+
+These events mark the end of the WebSocket session.
+
+| Event | Description | `data` shape |
+|---|---|---|
+| `dashboard_ready` | Full extraction complete. `data` is the complete `DashboardReport` object. | `DashboardReport` — see [Data Models](/api/data-models) |
+| `dashboard_extraction_failed` | A non-recoverable error occurred during the extraction phase. The session is terminated. | `{}` |
+| `error` | Any unexpected error (network, CAPTCHA, timeout, authentication, etc.). The session is terminated. | `{"message": string, "category": string}` |
+
+### Error event payload
+
+<ResponseField name="message" type="string">
+  A human-readable Spanish error message suitable for display in the UI. Examples: `"No se pudo iniciar sesión. Revisa tu usuario y contraseña."`, `"El SUV no está disponible en este momento."`.
+</ResponseField>
+
+<ResponseField name="category" type="string">
+  The Python exception class name that caused the error. Useful for programmatic error handling or logging. Possible values include `AuthenticationError`, `CaptchaError`, `NavigationError`, `ExtractionError`, `SuvTimeoutError`, `SuvUnavailableError`.
+</ResponseField>
+
+---
+
+## EVENT_LABELS Map
+
+The frontend ships a pre-built `EVENT_LABELS` map in `authentication_types.ts` that translates every event name to a Spanish UI label. Use this map to render progress messages directly in the interface without hard-coding strings.
+
+```typescript
+export const EVENT_LABELS: Record<string, string> = {
+  opening_suv: "Abriendo SUV...",
+  loading_login: "Cargando pantalla de login...",
+  downloading_captcha: "Descargando captcha...",
+  solving_captcha: "Resolviendo captcha...",
+  submitting_login: "Iniciando sesión...",
+  selecting_student: "Seleccionando perfil Alumno...",
+  authentication_success: "Autenticación exitosa",
+  authentication_failed: "Autenticación fallida",
+  extracting_profile: "Extrayendo perfil...",
+  profile_extraction_success: "Perfil extraído",
+  profile_extraction_failed: "Perfil no disponible",
+  extracting_record: "Extrayendo record académico...",
+  record_extraction_success: "Record extraído",
+  record_extraction_failed: "Record no disponible",
+  extracting_enrollment: "Extrayendo matrícula...",
+  enrollment_extraction_success: "Matrícula extraída",
+  enrollment_extraction_failed: "Matrícula no disponible",
+  extracting_attendance: "Extrayendo asistencia...",
+  attendance_extraction_success: "Asistencia extraída",
+  attendance_extraction_failed: "Asistencia no disponible",
+  extracting_grades: "Extrayendo notas...",
+  extracting_academic_info: "Extrayendo información académica...",
+  extracting_courses: "Extrayendo cursos...",
+  grade_extraction_success: "Notas extraídas",
+  grade_extraction_failed: "Error al extraer notas",
+  optimizing_schedule: "Optimizando horario...",
+  schedule_optimized: "Horario optimizado",
+  schedule_optimization_failed: "Optimización no disponible",
+  dashboard_ready: "Dashboard listo",
+  dashboard_extraction_failed: "Error al extraer datos",
+  error: "Error",
+}
+```
+
+### Usage example
+
+```typescript
+import { EVENT_LABELS } from "@/features/authentication/types/authentication_types"
+
+// Inside your onEvent callback:
+const connectAndFetchCleanup = connectAndFetch(username, password, {
+  onEvent: (eventName, _data) => {
+    const label = EVENT_LABELS[eventName] ?? eventName
+    setProgressMessage(label)
+  },
+  onDashboardReport: (report) => {
+    setDashboard(report)
+  },
+  onError: (message) => {
+    setErrorMessage(message)
+  },
+  onClose: () => {
+    setLoading(false)
+  },
+})
+```
+
+---
+
+## Complete Event Sequence (Happy Path)
+
+The following is the full ordered sequence of events emitted during a successful extraction with no section failures:
+
+```
+opening_suv
+loading_login
+downloading_captcha
+solving_captcha
+submitting_login
+selecting_student
+authentication_success
+extracting_profile
+profile_extraction_success
+extracting_record
+record_extraction_success
+extracting_enrollment
+enrollment_extraction_success
+extracting_attendance
+attendance_extraction_success
+extracting_grades
+extracting_academic_info
+extracting_courses
+grade_extraction_success
+optimizing_schedule
+schedule_optimized
+dashboard_ready
+```

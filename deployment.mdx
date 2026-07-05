@@ -1,0 +1,137 @@
+---
+title: "Deploy Unitru Academic to Railway"
+sidebarTitle: "Deployment"
+description: "Deploy the backend and frontend as two independent Railway services from the same monorepo. Configure domains, environment variables, and WebSocket TLS."
+---
+
+Unitru Academic deploys to **Railway** as two independent services — `backend` and `frontend` — from the same GitHub monorepo. Each service has its own `Dockerfile` and `railway.json` at the root of its subdirectory, so Railway knows exactly how to build and health-check each one. The backend runs FastAPI with Uvicorn behind Railway's TLS proxy; the frontend serves the Next.js standalone bundle with Node. The two services communicate exclusively over a secure WebSocket connection (`wss://`).
+
+<Note>
+  `${{service.RAILWAY_PUBLIC_DOMAIN}}` is a **Railway cross-service reference**. Railway resolves it automatically at deploy time — you never need to copy and paste the actual domain string between services.
+</Note>
+
+## Deployment Steps
+
+<Steps>
+  <Step title="Create two Railway services from the same repo">
+    In your Railway project, click **New → GitHub Repo** and select this repository **twice** — once for the backend and once for the frontend.
+
+    After adding each service, open its **Settings** and set the **Root Directory**:
+
+    | Service | Root Directory | Dockerfile | Health check |
+    |---|---|---|---|
+    | `backend` | `backend` | `backend/Dockerfile` | `GET /health` |
+    | `frontend` | `frontend` | `frontend/Dockerfile` | *(none)* |
+
+    Railway detects the `railway.json` in each root directory and uses it to configure the build and restart policy automatically.
+  </Step>
+
+  <Step title="Generate public domains for each service">
+    In each service, go to **Settings → Networking → Generate Domain**. Railway assigns a public `*.up.railway.app` subdomain.
+
+    For example:
+    - Backend  → `unitru-backend.up.railway.app`
+    - Frontend → `unitru-academic.up.railway.app`
+
+    You will reference these domains using cross-service variables in the next step — you do not need to copy them manually.
+  </Step>
+
+  <Step title="Set environment variables">
+    Open the **Variables** tab in each service and add the following:
+
+    **`backend` service:**
+
+    ```bash
+    ALLOWED_ORIGINS = https://${{frontend.RAILWAY_PUBLIC_DOMAIN}}
+    ```
+
+    This tells FastAPI's CORS middleware to allow requests from the deployed frontend domain.
+
+    **`frontend` service:**
+
+    ```bash
+    NEXT_PUBLIC_BACKEND_WS_URL = wss://${{backend.RAILWAY_PUBLIC_DOMAIN}}/ws
+    ```
+
+    This variable is passed as a Docker build argument (`ARG`) and baked into the Next.js bundle at build time. Note the `wss://` scheme (TLS) and the `/ws` path suffix — both are required.
+
+    <Warning>
+      `NEXT_PUBLIC_BACKEND_WS_URL` is a **build-time** variable — it is embedded into the JavaScript bundle during `next build` and cannot be changed at runtime. If you update this variable after the initial deploy, you must **redeploy the frontend** (trigger a new build) for the change to take effect.
+    </Warning>
+  </Step>
+
+  <Step title="Push to main — Railway builds and deploys both services">
+    Railway automatically builds and deploys both services on every push to the configured branch (default: `main`). Monitor build logs in the Railway dashboard.
+
+    Once both deployments are green, open the **frontend** public domain in your browser to access the dashboard.
+  </Step>
+</Steps>
+
+## Important Notes
+
+### `PORT` is injected by Railway automatically
+
+The backend's `CMD` uses `${PORT:-8000}` — Railway injects the `PORT` environment variable at runtime and the server binds to it. **Do not set `PORT` manually** in the backend service variables; doing so will conflict with Railway's internal port assignment.
+
+```dockerfile
+CMD uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips="*"
+```
+
+### Backend image size and RAM requirements
+
+The backend Docker image bundles Chromium (via `playwright install --with-deps chromium`) and Tesseract OCR. This makes it significantly larger than a typical Python API image. The first build on Railway will take several minutes.
+
+At runtime, a headless Chromium session requires meaningful memory. **Recommend allocating at least 1 GB of RAM** to the `backend` service in Railway's resource settings to avoid OOM kills during active scraping sessions.
+
+### WebSocket behind Railway's TLS proxy
+
+Railway terminates TLS at its edge proxy and forwards traffic to the container over plain HTTP/WS. The backend starts Uvicorn with `--proxy-headers --forwarded-allow-ips=*` so that FastAPI correctly sees the original client IP and protocol — this is required for WebSocket upgrades to work through the proxy.
+
+### Schedule catalog is baked into the image
+
+The schedule optimizer reads from `data/horarios_catalogo.json`, which is copied into the backend image at build time. To update the catalog with new semester data:
+
+1. Run `python3 scripts/download_horarios.py <google_sheets_url>` to fetch the latest spreadsheet.
+2. Run `python3 scripts/parse_horarios.py` to convert it to `horarios_catalogo.json`.
+3. Commit the updated JSON file and push — Railway will rebuild and redeploy the backend automatically.
+
+### Credentials are never persisted
+
+Even in production, SUV credentials are transmitted only over the encrypted WebSocket connection (`wss://`), held in memory during the active session, and discarded when the connection closes. Nothing is written to disk, a database, or logs.
+
+## Reference: `railway.json` Files
+
+Both services ship with a `railway.json` that instructs Railway to use the Dockerfile builder. The backend additionally configures a health check endpoint:
+
+**`backend/railway.json`:**
+
+```json
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile"
+  },
+  "deploy": {
+    "healthcheckPath": "/health",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  }
+}
+```
+
+**`frontend/railway.json`:**
+
+```json
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile"
+  },
+  "deploy": {
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  }
+}
+```
